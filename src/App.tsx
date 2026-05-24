@@ -1,5 +1,6 @@
 import MapPage from "@/pages/MapPage";
 import TestPage from "@/pages/TestPage";
+import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
 import {
 	createRootRoute,
 	createRoute,
@@ -34,8 +35,14 @@ declare module "@tanstack/react-router" {
 	}
 }
 
+const queryClient = new QueryClient();
+
 function App() {
-	return <RouterProvider router={router} />;
+	return (
+		<QueryClientProvider client={queryClient}>
+			<RouterProvider router={router} />
+		</QueryClientProvider>
+	);
 }
 
 export default App;
