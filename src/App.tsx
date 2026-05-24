@@ -1,3 +1,4 @@
+import AnimPage from "@/pages/AnimPage";
 import MapPage from "@/pages/MapPage";
 import TestPage from "@/pages/TestPage";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
@@ -19,13 +20,19 @@ const indexRoute = createRoute({
 	component: MapPage,
 });
 
-const testRoute = createRoute({
+const avatarRoute = createRoute({
 	getParentRoute: () => rootRoute,
-	path: "/test",
+	path: "/avatar",
 	component: TestPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, testRoute]);
+const animRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/anim",
+	component: AnimPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, avatarRoute, animRoute]);
 
 const router = createRouter({routeTree});
 

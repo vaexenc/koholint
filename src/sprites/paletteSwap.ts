@@ -131,10 +131,7 @@ function initGl(): GlState | null {
 // returns a fresh 2d canvas snapshot so callers can hold it independently of
 // the shared webgl backbuffer. falls back to the original image on a 2d canvas
 // when webgl2 is unavailable.
-export function recolorImage(
-	image: HTMLImageElement,
-	map: SpriteSheetColorMap
-): HTMLCanvasElement {
+export function recolorImage(image: HTMLImageElement, map: SpriteSheetColorMap): HTMLCanvasElement {
 	const w = image.naturalWidth;
 	const h = image.naturalHeight;
 	const out = document.createElement("canvas");
