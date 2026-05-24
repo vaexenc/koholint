@@ -16,7 +16,7 @@ const CAMERA_SMOOTHING = 7;
 // pause doesn't teleport the camera in one step.
 const MAX_FRAME_DT = 0.1;
 // side length of the keyboard-controlled square, in map pixels.
-const PLAYER_SIZE = 12;
+const PLAYER_SIZE = 14;
 // player movement speed in map pixels per second (~5 tiles/sec at 16px tiles).
 const PLAYER_SPEED = 80;
 const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
@@ -361,7 +361,7 @@ function MapPage() {
 				onPointerCancel={onPointerUp}
 				onWheel={onWheel}
 			/>
-			<div className="absolute top-2 left-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
+			<div className="absolute top-2 right-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
 				{state.status === "loading" && <p>loading map…</p>}
 				{state.status === "error" && (
 					<pre className="whitespace-pre-wrap text-red-400">{state.message}</pre>
