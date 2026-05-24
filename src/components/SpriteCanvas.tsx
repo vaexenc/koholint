@@ -3,7 +3,8 @@ import {
 	type ResolvedSpriteAnimationFrame,
 	type SpriteAnimation,
 } from "@/sprites/animations";
-import type {SpriteAsset, SpriteSheet} from "@/types";
+import {buildColorMap, recolorImage} from "@/sprites/paletteSwap";
+import type {SpriteAsset, SpritePalette, SpriteSheet} from "@/types";
 import {useEffect, useMemo, useRef, useState} from "react";
 
 function useSpriteImage(url: string): HTMLImageElement | null {
@@ -43,7 +44,7 @@ function computeSheetPadding(sheet: SpriteSheet): SheetPadding {
 
 function drawFrame(
 	ctx: CanvasRenderingContext2D,
-	image: HTMLImageElement,
+	image: CanvasImageSource,
 	frame: ResolvedSpriteAnimationFrame,
 	scale: number,
 	originX: number,
@@ -75,21 +76,40 @@ type SpriteCanvasProps = {
 	sprite: SpriteAsset;
 	scale: number;
 	animation?: SpriteAnimation;
+	paletteSwap?: SpritePalette;
 	className?: string;
 };
 
 // draws a sprite animation onto a canvas, ticking frames via rAF and
 // flipping horizontally when the active frame is mirrored. when no
 // animation is supplied the first sheet entry is painted once.
-export function SpriteCanvas({sprite, scale, animation, className}: SpriteCanvasProps) {
+export function SpriteCanvas({
+	sprite,
+	scale,
+	animation,
+	paletteSwap,
+	className,
+}: SpriteCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 	const image = useSpriteImage(sprite.imageUrl);
 	const sheet = sprite.sheet;
 	const baseSprite = sheet[0];
 	const padding = useMemo(() => computeSheetPadding(sheet), [sheet]);
+	const colorMap = useMemo(
+		() => (sprite.palette && paletteSwap ? buildColorMap(sprite.palette, paletteSwap) : null),
+		[sprite.palette, paletteSwap]
+	);
+	const recolored = useMemo(
+		() =>
+			image && colorMap && Object.keys(colorMap).length > 0
+				? recolorImage(image, colorMap)
+				: null,
+		[image, colorMap]
+	);
+	const source: CanvasImageSource | null = recolored ?? image;
 	useEffect(() => {
 		const canvas = canvasRef.current;
-		if (!canvas || !image || !baseSprite) return;
+		if (!canvas || !source || !baseSprite) return;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 		const originX = padding.x * scale;
@@ -100,7 +120,7 @@ export function SpriteCanvas({sprite, scale, animation, className}: SpriteCanvas
 		if (!animation) {
 			drawFrame(
 				ctx,
-				image,
+				source,
 				{sprite: baseSprite, mirrorX: false, mirrorY: false},
 				scale,
 				originX,
@@ -126,14 +146,14 @@ export function SpriteCanvas({sprite, scale, animation, className}: SpriteCanvas
 			ctx.imageSmoothingEnabled = false;
 			ctx.setTransform(1, 0, 0, 1, 0, 0);
 			ctx.clearRect(0, 0, canvas.width, canvas.height);
-			if (frame) drawFrame(ctx, image, frame, scale, originX, originY);
+			if (frame) drawFrame(ctx, source, frame, scale, originX, originY);
 			requestAnimationFrame(tick);
 		};
 		requestAnimationFrame(tick);
 		return () => {
 			cancelled = true;
 		};
-	}, [image, baseSprite, scale, animation, sheet, padding]);
+	}, [source, baseSprite, scale, animation, sheet, padding]);
 	if (!baseSprite) return null;
 	return (
 		<canvas

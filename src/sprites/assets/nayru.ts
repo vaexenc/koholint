@@ -34,7 +34,7 @@ export const NayruSpriteAsset: SpriteAsset = {
 		},
 	],
 	"palette": {
-		0: ["#1984ff"],
-		1: ["#ffd68c"],
+		primary: ["#1984ff"],
+		skin: ["#ffd68c"],
 	},
 };

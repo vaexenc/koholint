@@ -33,7 +33,7 @@ export const LinkSpriteAsset: SpriteAsset = {
 		},
 	],
 	"palette": {
-		0: ["#10ad42"],
-		1: ["#ffd68c"],
+		primary: ["#10ad42"],
+		skin: ["#ffd68c"],
 	},
 };

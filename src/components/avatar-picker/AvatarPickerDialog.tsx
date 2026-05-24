@@ -11,6 +11,7 @@ import {
 	CLASSIC_CHARACTER_ANIMATIONS,
 	type ClassicCharacterAnimationName,
 } from "@/sprites/animations";
+import {PALETTES, type NamedPalette} from "@/sprites/palettes";
 import {useEffect, useState} from "react";
 import {AVATARS, type Avatar} from "./registry";
 
@@ -41,10 +42,11 @@ function useCycle<T>(items: readonly T[], intervalMs: number, active: boolean): 
 type AvatarListItemProps = {
 	avatar: Avatar;
 	selected: boolean;
+	paletteSwap?: NamedPalette["palette"];
 	onSelect: (id: string) => void;
 };
 
-function AvatarListItem({avatar, selected, onSelect}: AvatarListItemProps) {
+function AvatarListItem({avatar, selected, paletteSwap, onSelect}: AvatarListItemProps) {
 	return (
 		<li>
 			<button
@@ -56,17 +58,70 @@ function AvatarListItem({avatar, selected, onSelect}: AvatarListItemProps) {
 					(selected ? "border-primary bg-muted" : "border-border hover:bg-muted/50")
 				}
 			>
-				<SpriteCanvas sprite={avatar.sprite} scale={2} />
+				<SpriteCanvas sprite={avatar.sprite} scale={2} paletteSwap={paletteSwap} />
 				<span>{avatar.name}</span>
 			</button>
 		</li>
 	);
 }
 
+type PaletteSwatchProps = {
+	palette: NamedPalette;
+	selected: boolean;
+	onSelect: (id: string) => void;
+};
+
+function PaletteSwatch({palette, selected, onSelect}: PaletteSwatchProps) {
+	const primary = palette.palette.primary?.[0] ?? "#000";
+	const skin = palette.palette.skin?.[0] ?? "#000";
+	return (
+		<button
+			type="button"
+			onClick={() => onSelect(palette.id)}
+			aria-pressed={selected}
+			title={palette.name}
+			className={
+				"h-8 w-8 overflow-hidden rounded-md border transition-colors " +
+				(selected ? "border-primary ring-2 ring-primary" : "border-border hover:opacity-80")
+			}
+		>
+			<span className="flex h-full w-full">
+				<span className="h-full w-1/2" style={{background: primary}} />
+				<span className="h-full w-1/2" style={{background: skin}} />
+			</span>
+		</button>
+	);
+}
+
+type PaletteOffSwatchProps = {
+	selected: boolean;
+	onSelect: () => void;
+};
+
+function PaletteOffSwatch({selected, onSelect}: PaletteOffSwatchProps) {
+	return (
+		<button
+			type="button"
+			onClick={onSelect}
+			aria-pressed={selected}
+			title="No palette swap"
+			className={
+				"flex h-8 w-8 items-center justify-center rounded-md border bg-background text-xs text-muted-foreground transition-colors " +
+				(selected ? "border-primary ring-2 ring-primary" : "border-border hover:opacity-80")
+			}
+		>
+			Off
+		</button>
+	);
+}
+
 export function AvatarPickerDialog() {
-	const [open, setOpen] = useState(false);
+	const [open, setOpen] = useState(true);
 	const [selectedId, setSelectedId] = useState<string>(AVATARS[0].id);
+	const [paletteId, setPaletteId] = useState<string | null>(null);
 	const selected = AVATARS.find((a) => a.id === selectedId) ?? AVATARS[0];
+	const selectedPalette = paletteId ? PALETTES.find((p) => p.id === paletteId) : undefined;
+	const paletteSwap = selectedPalette?.palette;
 	// gated on `open` so we don't churn rAF/intervals in the background.
 	const previewAnimation = useCycle(PREVIEW_ANIMATION_CYCLE, PREVIEW_POSE_INTERVAL_MS, open);
 	return (
@@ -85,16 +140,32 @@ export function AvatarPickerDialog() {
 								key={avatar.id}
 								avatar={avatar}
 								selected={avatar.id === selected.id}
+								paletteSwap={paletteSwap}
 								onSelect={setSelectedId}
 							/>
 						))}
 					</ul>
-					<div className="flex flex-1 items-center justify-center rounded-md border border-border bg-muted/30 p-6">
+					<div className="flex flex-1 flex-col items-center gap-4 rounded-md border border-border bg-muted/30 p-6">
 						<SpriteCanvas
 							sprite={selected.sprite}
 							scale={8}
 							animation={CLASSIC_CHARACTER_ANIMATIONS[previewAnimation]}
+							paletteSwap={paletteSwap}
 						/>
+						<div className="flex flex-wrap justify-center gap-2">
+							<PaletteOffSwatch
+								selected={paletteId === null}
+								onSelect={() => setPaletteId(null)}
+							/>
+							{PALETTES.map((p) => (
+								<PaletteSwatch
+									key={p.id}
+									palette={p}
+									selected={p.id === paletteId}
+									onSelect={setPaletteId}
+								/>
+							))}
+						</div>
 					</div>
 				</div>
 			</DialogContent>

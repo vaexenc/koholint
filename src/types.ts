@@ -12,7 +12,10 @@ export type SpriteSheet = SpriteSheetFrame[];
 
 export type HexColor = `#${string}`;
 
-export type SpritePalette = Record<number, HexColor[]>;
+export type SpritePalette = {
+	primary?: HexColor[];
+	skin?: HexColor[];
+};
 
 export type SpriteAsset = {
 	imageUrl: string;
