@@ -93,12 +93,13 @@ const SEED_ENTRIES: SeedEntry[] = [
 	},
 ];
 
+const SEED_REPEAT = 5;
+
 const SEED_MESSAGES: ChatMessage[] = (() => {
 	const now = Date.now();
-	const offsets = SEED_ENTRIES.map(() => Math.floor(Math.random() * 3600000)).sort(
-		(a, b) => b - a
-	);
-	return SEED_ENTRIES.map((e, i) => {
+	const entries = Array.from({length: SEED_REPEAT}, () => SEED_ENTRIES).flat();
+	const offsets = entries.map(() => Math.floor(Math.random() * 3600000)).sort((a, b) => b - a);
+	return entries.map((e, i) => {
 		const timestamp = now - offsets[i];
 		const id = crypto.randomUUID();
 		return e.kind === "chat"
