@@ -1,5 +1,6 @@
 import {type ChatMessage} from "@/components/Chat";
 import ChatPanel from "@/components/ChatPanel";
+import {createCloudField, drawCloudShadows} from "@/effects/clouds";
 import {buildAnimationTable} from "@/tiled/animation";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
 import {renderTiledMap} from "@/tiled/renderer";
@@ -243,6 +244,7 @@ function MapPage() {
 					offscreen.height = mapPixelHeight;
 					const offCtx = offscreen.getContext("2d");
 					if (!offCtx) throw new Error("failed to create offscreen 2d context");
+					const clouds = createCloudField(mapPixelWidth, mapPixelHeight);
 					const startTime = performance.now();
 					let lastFrameTime = 0;
 					const renderFrame = (now: number) => {
@@ -307,13 +309,15 @@ function MapPage() {
 
 						offCtx.setTransform(1, 0, 0, 1, 0, 0);
 						offCtx.clearRect(0, 0, mapPixelWidth, mapPixelHeight);
+						const elapsedMs = now - startTime;
 						renderTiledMap(offCtx, {
 							map,
 							tilesets,
 							animations,
-							timeMs: now - startTime,
+							timeMs: elapsedMs,
 							debug: debugRef.current,
 						});
+						drawCloudShadows(offCtx, clouds, elapsedMs);
 						if (followRef.current) {
 							const player = playerRef.current;
 							offCtx.fillStyle = "#000";
