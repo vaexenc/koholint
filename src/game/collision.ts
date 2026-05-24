@@ -1,8 +1,11 @@
-import {decodeTileGid, EMPTY_TILE_ID} from "@/tiled/gid";
 import type {TiledMap} from "@/tiled/loadMap";
-import type {ITiledMapObject, ITiledMapObjectLayer} from "@workadventure/tiled-map-type-guard";
-
-type TiledProperty = NonNullable<ITiledMapObject["properties"]>[number];
+import {
+	collectTileIdsWithBoolProperty,
+	forEachTaggedCell,
+	hasBoolProperty,
+	iterateObjectLayers,
+} from "@/tiled/tileScan";
+import type {ITiledMapObject} from "@workadventure/tiled-map-type-guard";
 
 const SOLID_PROPERTY = "solid";
 
@@ -26,24 +29,15 @@ export type Aabb = {
 // the gid down to its raw id. multiple layers OR together, so a walkable
 // surface drawn beneath a solid prop still results in a solid cell.
 export function buildSolidGrid(map: TiledMap): SolidGrid {
-	const solidIds = collectSolidTileIds(map);
+	const solidIds = collectTileIdsWithBoolProperty(map, SOLID_PROPERTY);
 	const cells = new Uint8Array(map.width * map.height);
-	for (const layer of iterateTileLayers(map)) {
-		if (!Array.isArray(layer.data)) continue;
-		for (let i = 0; i < layer.data.length; i++) {
-			const gid = layer.data[i];
-			if (gid === EMPTY_TILE_ID) continue;
-			const {id} = decodeTileGid(gid);
-			if (!solidIds.has(id)) continue;
-			const col = i % layer.width;
-			const row = Math.floor(i / layer.width);
-			cells[row * map.width + col] = 1;
-		}
-	}
+	forEachTaggedCell(map, solidIds, (col, row) => {
+		cells[row * map.width + col] = 1;
+	});
 	for (const layer of iterateObjectLayers(map)) {
-		const layerSolid = hasSolidProperty(layer.properties);
+		const layerSolid = hasBoolProperty(layer.properties, SOLID_PROPERTY);
 		for (const object of layer.objects) {
-			if (!layerSolid && !hasSolidProperty(object.properties)) continue;
+			if (!layerSolid && !hasBoolProperty(object.properties, SOLID_PROPERTY)) continue;
 			const box = objectAabb(object);
 			if (!box) continue;
 			stampSolidCells(cells, map, box);
@@ -195,26 +189,6 @@ function anyPerpSolid(
 	return false;
 }
 
-function collectSolidTileIds(map: TiledMap): Set<number> {
-	const ids = new Set<number>();
-	for (const tileset of map.tilesets) {
-		if (!("firstgid" in tileset) || tileset.firstgid === undefined) continue;
-		const tiles = "tiles" in tileset ? tileset.tiles : undefined;
-		if (!tiles) continue;
-		for (const tile of tiles) {
-			if (hasSolidProperty(tile.properties)) ids.add(tileset.firstgid + tile.id);
-		}
-	}
-	return ids;
-}
-
-function hasSolidProperty(properties: ReadonlyArray<TiledProperty> | undefined): boolean {
-	if (!properties) return false;
-	return properties.some(
-		(p) => p.name === SOLID_PROPERTY && p.type === "bool" && p.value === true
-	);
-}
-
 // tile-objects use tiled's bottom-origin convention (y marks the sprite's
 // baseline), while all other shapes are top-origin. points and path objects
 // have no usable aabb for grid stamping so they're skipped.
@@ -239,27 +213,5 @@ function stampSolidCells(cells: Uint8Array, map: TiledMap, box: Aabb): void {
 		for (let col = minCol; col <= maxCol; col++) {
 			cells[row * map.width + col] = 1;
 		}
-	}
-}
-
-function* iterateTileLayers(map: TiledMap): Generator<{
-	readonly data: number[];
-	readonly width: number;
-}> {
-	const stack: TiledMap["layers"][number][] = [...map.layers];
-	while (stack.length > 0) {
-		const layer = stack.pop()!;
-		if (layer.type === "tilelayer" && Array.isArray(layer.data))
-			yield {data: layer.data as number[], width: layer.width};
-		else if (layer.type === "group") stack.push(...layer.layers);
-	}
-}
-
-function* iterateObjectLayers(map: TiledMap): Generator<ITiledMapObjectLayer> {
-	const stack: TiledMap["layers"][number][] = [...map.layers];
-	while (stack.length > 0) {
-		const layer = stack.pop()!;
-		if (layer.type === "objectgroup") yield layer;
-		else if (layer.type === "group") stack.push(...layer.layers);
 	}
 }

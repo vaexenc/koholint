@@ -1,6 +1,7 @@
 import {resolveCharacterCollision, stepCharacter, type BasicCharacter} from "./character";
 import type {SolidGrid} from "./collision";
 import type {InputProvider} from "./controllers";
+import type {TerrainGrid} from "./terrain";
 import {NEUTRAL_INPUT, type CharacterInput, type EntityId} from "./types";
 
 // the authoritative simulation. step() samples each entity's input provider
@@ -10,9 +11,14 @@ import {NEUTRAL_INPUT, type CharacterInput, type EntityId} from "./types";
 // for prediction.
 export class World {
 	readonly characters = new Map<EntityId, BasicCharacter>();
+	readonly grid: SolidGrid;
+	readonly terrain?: TerrainGrid;
 	private inputProviders = new Map<EntityId, InputProvider>();
 
-	constructor(readonly grid: SolidGrid) {}
+	constructor(grid: SolidGrid, terrain?: TerrainGrid) {
+		this.grid = grid;
+		this.terrain = terrain;
+	}
 
 	addCharacter(character: BasicCharacter, inputProvider: InputProvider): void {
 		resolveCharacterCollision(character, this.grid);
@@ -46,7 +52,7 @@ export class World {
 	applyInputs(inputs: ReadonlyMap<EntityId, CharacterInput>, dtSec: number): void {
 		for (const [id, char] of this.characters) {
 			const input = inputs.get(id) ?? NEUTRAL_INPUT;
-			stepCharacter(char, input, dtSec, this.grid);
+			stepCharacter(char, input, dtSec, this.grid, this.terrain);
 		}
 	}
 }

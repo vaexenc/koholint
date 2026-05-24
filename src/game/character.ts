@@ -1,5 +1,6 @@
 import type {SpriteAsset, SpritePalette} from "@/types";
 import {findNearestFreeAabb, moveAabb, type Aabb, type SolidGrid} from "./collision";
+import {getTerrainSpeedMultiplier, type TerrainGrid} from "./terrain";
 import {inputHasMovement, type CharacterInput, type Direction, type EntityId} from "./types";
 
 // collision box anchored to a 16x16 sprite's lower-body footprint. matches
@@ -73,7 +74,8 @@ export function stepCharacter(
 	char: BasicCharacter,
 	input: CharacterInput,
 	dtSec: number,
-	grid: SolidGrid
+	grid: SolidGrid,
+	terrain?: TerrainGrid
 ): void {
 	char.prevX = char.x;
 	char.prevY = char.y;
@@ -82,10 +84,11 @@ export function stepCharacter(
 	const moving = inputHasMovement(input) && (dx !== 0 || dy !== 0);
 	if (moving) {
 		const len = Math.hypot(dx, dy);
-		const stepDist = char.speed * dtSec;
+		const before = characterAabb(char);
+		const speedMultiplier = terrain ? getTerrainSpeedMultiplier(terrain, before) : 1;
+		const stepDist = char.speed * speedMultiplier * dtSec;
 		const moveX = (dx / len) * stepDist;
 		const moveY = (dy / len) * stepDist;
-		const before = characterAabb(char);
 		const after = moveAabb(grid, before, moveX, moveY);
 		char.x += after.x - before.x;
 		char.y += after.y - before.y;

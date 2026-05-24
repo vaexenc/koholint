@@ -3,6 +3,7 @@ import ChatPanel from "@/components/ChatPanel";
 
 import {
 	buildSolidGrid,
+	buildTerrainGrid,
 	CharacterRenderer,
 	createBasicCharacter,
 	DEFAULT_TICK_RATE_HZ,
@@ -220,7 +221,8 @@ function MapPage() {
 					const mapPixelWidth = map.width * map.tilewidth;
 					const mapPixelHeight = map.height * map.tileheight;
 					const solidGrid = buildSolidGrid(map);
-					const world = new World(solidGrid);
+					const terrainGrid = buildTerrainGrid(map);
+					const world = new World(solidGrid, terrainGrid);
 					const clock = new GameClock(tickRateRef.current);
 					const renderer = new CharacterRenderer();
 					const playerStart = {
