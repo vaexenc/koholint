@@ -1,5 +1,6 @@
 **/*.yaml
 **/*.yml
-**/package.json
 **/package-lock.json
+**/package.json
 dist
+public
