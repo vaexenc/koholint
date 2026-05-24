@@ -29,6 +29,7 @@ export const NayruAvatar: AvatarData = {
 			y: 0,
 			width: 16,
 			height: 16,
+			offsetX: 1,
 		},
 	],
 	"palette": {
