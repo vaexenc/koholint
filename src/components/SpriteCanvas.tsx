@@ -1,10 +1,10 @@
-import {useEffect, useMemo, useRef, useState} from "react";
-import type {SpriteAsset, SpriteSheet} from "../types";
 import {
 	getAnimationFrame,
 	type ResolvedSpriteAnimationFrame,
 	type SpriteAnimation,
-} from "./animations";
+} from "@/sprites/animations";
+import type {SpriteAsset, SpriteSheet} from "@/types";
+import {useEffect, useMemo, useRef, useState} from "react";
 
 function useSpriteImage(url: string): HTMLImageElement | null {
 	const [img, setImg] = useState<HTMLImageElement | null>(null);

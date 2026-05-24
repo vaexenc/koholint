@@ -1,4 +1,4 @@
-import {AvatarPickerDialog} from "@/components/AvatarPickerDialog";
+import {AvatarPickerDialog} from "@/components/avatar-picker/AvatarPickerDialog";
 
 function TestPage() {
 	return (

@@ -1,4 +1,4 @@
-import type {SpriteSheet} from "../types";
+import type {SpriteSheet} from "@/types";
 
 export type SpriteAnimationFrame = {
 	spriteIndex: number;

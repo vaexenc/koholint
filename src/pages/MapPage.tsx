@@ -1,8 +1,8 @@
+import {buildAnimationTable} from "@/tiled/animation";
+import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
+import {renderTiledMap} from "@/tiled/renderer";
+import {loadTilesets} from "@/tiled/tileset";
 import {useEffect, useRef, useState, type PointerEvent, type WheelEvent} from "react";
-import {buildAnimationTable} from "./tiled/animation";
-import {loadTiledMap, type TiledMap} from "./tiled/loadMap";
-import {renderTiledMap} from "./tiled/renderer";
-import {loadTilesets} from "./tiled/tileset";
 
 const MAP_URL = "/maps/overworld.json";
 const INITIAL_SCALE = 2;

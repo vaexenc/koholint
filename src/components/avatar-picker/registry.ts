@@ -1,6 +1,6 @@
-import {LinkSpriteAsset} from "../sprites/link";
-import {NayruSpriteAsset} from "../sprites/nayru";
-import type {SpriteAsset} from "../types";
+import {LinkSpriteAsset} from "@/sprites/assets/link";
+import {NayruSpriteAsset} from "@/sprites/assets/nayru";
+import type {SpriteAsset} from "@/types";
 
 export type Avatar = {
 	id: string;

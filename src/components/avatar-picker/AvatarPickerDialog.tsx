@@ -1,4 +1,4 @@
-import {AVATARS, type Avatar} from "@/avatars/registry";
+import {SpriteCanvas} from "@/components/SpriteCanvas";
 import {Button} from "@/components/ui/button";
 import {
 	Dialog,
@@ -11,8 +11,8 @@ import {
 	CLASSIC_CHARACTER_ANIMATIONS,
 	type ClassicCharacterAnimationName,
 } from "@/sprites/animations";
-import {SpriteCanvas} from "@/sprites/SpriteCanvas";
 import {useEffect, useState} from "react";
+import {AVATARS, type Avatar} from "./registry";
 
 const PREVIEW_POSE_INTERVAL_MS = 1000;
 

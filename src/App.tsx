@@ -1,3 +1,5 @@
+import MapPage from "@/pages/MapPage";
+import TestPage from "@/pages/TestPage";
 import {
 	createRootRoute,
 	createRoute,
@@ -5,8 +7,6 @@ import {
 	Outlet,
 	RouterProvider,
 } from "@tanstack/react-router";
-import MapPage from "./MapPage";
-import TestPage from "./TestPage";
 
 const rootRoute = createRootRoute({
 	component: () => <Outlet />,
