@@ -1,0 +1,52 @@
+import {resolveCharacterCollision, stepCharacter, type BasicCharacter} from "./character";
+import type {SolidGrid} from "./collision";
+import type {InputProvider} from "./controllers";
+import {NEUTRAL_INPUT, type CharacterInput, type EntityId} from "./types";
+
+// the authoritative simulation. step() samples each entity's input provider
+// for the tick and feeds the inputs into applyInputs(). splitting the two
+// lets a future server bypass sample() and call applyInputs() directly with
+// inputs received from the wire, while the client can still tick locally
+// for prediction.
+export class World {
+	readonly characters = new Map<EntityId, BasicCharacter>();
+	private inputProviders = new Map<EntityId, InputProvider>();
+
+	constructor(readonly grid: SolidGrid) {}
+
+	addCharacter(character: BasicCharacter, inputProvider: InputProvider): void {
+		resolveCharacterCollision(character, this.grid);
+		this.characters.set(character.id, character);
+		this.inputProviders.set(character.id, inputProvider);
+	}
+
+	removeCharacter(id: EntityId): void {
+		this.characters.delete(id);
+		const provider = this.inputProviders.get(id);
+		provider?.dispose?.();
+		this.inputProviders.delete(id);
+	}
+
+	dispose(): void {
+		for (const id of [...this.inputProviders.keys()]) this.removeCharacter(id);
+	}
+
+	step(tick: number, dtSec: number): void {
+		const inputs = this.sampleInputs(tick, dtSec);
+		this.applyInputs(inputs, dtSec);
+	}
+
+	sampleInputs(tick: number, dtSec: number): Map<EntityId, CharacterInput> {
+		const inputs = new Map<EntityId, CharacterInput>();
+		for (const [id, provider] of this.inputProviders)
+			inputs.set(id, provider.sample(tick, dtSec));
+		return inputs;
+	}
+
+	applyInputs(inputs: ReadonlyMap<EntityId, CharacterInput>, dtSec: number): void {
+		for (const [id, char] of this.characters) {
+			const input = inputs.get(id) ?? NEUTRAL_INPUT;
+			stepCharacter(char, input, dtSec, this.grid);
+		}
+	}
+}

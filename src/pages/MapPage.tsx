@@ -1,6 +1,19 @@
 import {type ChatMessage} from "@/components/Chat";
 import ChatPanel from "@/components/ChatPanel";
-import {createCloudField, drawCloudShadows} from "@/effects/clouds";
+
+import {
+	buildSolidGrid,
+	CharacterRenderer,
+	createBasicCharacter,
+	DEFAULT_TICK_RATE_HZ,
+	GameClock,
+	KeyboardInputProvider,
+	RandomInputProvider,
+	World,
+	type BasicCharacter,
+} from "@/game";
+import {LinkSpriteAsset} from "@/sprites/assets/link";
+import {NayruSpriteAsset} from "@/sprites/assets/nayru";
 import {buildAnimationTable} from "@/tiled/animation";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
 import {renderTiledMap} from "@/tiled/renderer";
@@ -18,11 +31,10 @@ const CAMERA_SMOOTHING = 7;
 // max dt we feed the integrator, so a tab regaining focus after a long
 // pause doesn't teleport the camera in one step.
 const MAX_FRAME_DT = 0.1;
-// side length of the keyboard-controlled square, in map pixels.
-const PLAYER_SIZE = 14;
-// player movement speed in map pixels per second (~5 tiles/sec at 16px tiles).
-const PLAYER_SPEED = 80;
-const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+const PLAYER_CHARACTER_ID = "player-link";
+const NPC_CHARACTER_ID = "npc-nayru";
+const MIN_TICK_RATE_HZ = 5;
+const MAX_TICK_RATE_HZ = 120;
 
 const CURRENT_USER = {name: "pixelwitch", color: "#1E90FF"};
 const SEED_AVATAR = "/images/sprites/windfish.png";
@@ -153,16 +165,21 @@ function MapPage() {
 	const mouseRef = useRef<{x: number; y: number} | null>(null);
 	const displayedZoomRef = useRef(INITIAL_SCALE);
 	const displayedCursorRef = useRef<{x: number; y: number} | null>(null);
-	const keysRef = useRef<Set<string>>(new Set());
-	const playerRef = useRef<{x: number; y: number}>({x: 0, y: 0});
-	const followRef = useRef(false);
-	const mapSizeRef = useRef<{w: number; h: number} | null>(null);
+	const followRef = useRef(true);
+	const gameRef = useRef<{
+		world: World;
+		clock: GameClock;
+		renderer: CharacterRenderer;
+		player: BasicCharacter;
+	} | null>(null);
+	const tickRateRef = useRef(DEFAULT_TICK_RATE_HZ);
 	const [state, setState] = useState<LoadState>({status: "loading"});
 	const [debug, setDebug] = useState(false);
 	const [zoom, setZoom] = useState(INITIAL_SCALE);
 	const [cursor, setCursor] = useState<{x: number; y: number} | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
-	const [follow, setFollow] = useState(false);
+	const [follow, setFollow] = useState(true);
+	const [tickRate, setTickRate] = useState(DEFAULT_TICK_RATE_HZ);
 
 	useEffect(() => {
 		debugRef.current = debug;
@@ -173,27 +190,9 @@ function MapPage() {
 	}, [follow]);
 
 	useEffect(() => {
-		const onKeyDown = (e: KeyboardEvent) => {
-			if (!ARROW_KEYS.has(e.key)) return;
-			keysRef.current.add(e.key);
-			// stop arrow keys from scrolling the page or moving caret focus
-			// inside the overlay's controls.
-			e.preventDefault();
-		};
-		const onKeyUp = (e: KeyboardEvent) => {
-			if (!ARROW_KEYS.has(e.key)) return;
-			keysRef.current.delete(e.key);
-		};
-		const onBlur = () => keysRef.current.clear();
-		window.addEventListener("keydown", onKeyDown);
-		window.addEventListener("keyup", onKeyUp);
-		window.addEventListener("blur", onBlur);
-		return () => {
-			window.removeEventListener("keydown", onKeyDown);
-			window.removeEventListener("keyup", onKeyUp);
-			window.removeEventListener("blur", onBlur);
-		};
-	}, []);
+		tickRateRef.current = tickRate;
+		gameRef.current?.clock.setTickRate(tickRate);
+	}, [tickRate]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -220,11 +219,31 @@ function MapPage() {
 					// seams between tiles at non-integer zoom levels.
 					const mapPixelWidth = map.width * map.tilewidth;
 					const mapPixelHeight = map.height * map.tileheight;
-					mapSizeRef.current = {w: mapPixelWidth, h: mapPixelHeight};
-					playerRef.current = {
-						x: mapPixelWidth / 2 - PLAYER_SIZE / 2,
-						y: mapPixelHeight / 2 - PLAYER_SIZE / 2,
+					const solidGrid = buildSolidGrid(map);
+					const world = new World(solidGrid);
+					const clock = new GameClock(tickRateRef.current);
+					const renderer = new CharacterRenderer();
+					const playerStart = {
+						x: mapPixelWidth / 2 - 8,
+						y: mapPixelHeight / 2 - 8,
 					};
+					const player = createBasicCharacter({
+						id: PLAYER_CHARACTER_ID,
+						sprite: LinkSpriteAsset,
+						x: playerStart.x,
+						y: playerStart.y,
+					});
+					const npc = createBasicCharacter({
+						id: NPC_CHARACTER_ID,
+						sprite: NayruSpriteAsset,
+						x: playerStart.x + 32,
+						y: playerStart.y,
+					});
+					world.addCharacter(player, new KeyboardInputProvider());
+					world.addCharacter(npc, new RandomInputProvider());
+					gameRef.current = {world, clock, renderer, player};
+					await renderer.ensureLoaded(world.characters.values());
+					if (cancelled) return;
 					// center the map in the viewport on first render. set current
 					// and target to the same value so the spring has nothing to
 					// animate at load.
@@ -244,7 +263,6 @@ function MapPage() {
 					offscreen.height = mapPixelHeight;
 					const offCtx = offscreen.getContext("2d");
 					if (!offCtx) throw new Error("failed to create offscreen 2d context");
-					const clouds = createCloudField(mapPixelWidth, mapPixelHeight);
 					const startTime = performance.now();
 					let lastFrameTime = 0;
 					const renderFrame = (now: number) => {
@@ -259,37 +277,19 @@ function MapPage() {
 								: Math.min((now - lastFrameTime) / 1000, MAX_FRAME_DT);
 						lastFrameTime = now;
 
-						// integrate the player from currently-held arrow keys, then
-						// (when following) point the camera target at its center.
-						// done before the camera spring step so the spring starts
-						// chasing this frame's player position immediately.
-						if (followRef.current && dt > 0) {
-							const keys = keysRef.current;
-							let dx = 0;
-							let dy = 0;
-							if (keys.has("ArrowLeft")) dx -= 1;
-							if (keys.has("ArrowRight")) dx += 1;
-							if (keys.has("ArrowUp")) dy -= 1;
-							if (keys.has("ArrowDown")) dy += 1;
-							const len = Math.hypot(dx, dy);
-							const player = playerRef.current;
-							if (len > 0) {
-								const step = (PLAYER_SPEED * dt) / len;
-								player.x = Math.max(
-									0,
-									Math.min(mapPixelWidth - PLAYER_SIZE, player.x + dx * step)
-								);
-								player.y = Math.max(
-									0,
-									Math.min(mapPixelHeight - PLAYER_SIZE, player.y + dy * step)
-								);
-							}
-							cam.targetOffsetX =
-								window.innerWidth / 2 -
-								(player.x + PLAYER_SIZE / 2) * cam.targetScale;
-							cam.targetOffsetY =
-								window.innerHeight / 2 -
-								(player.y + PLAYER_SIZE / 2) * cam.targetScale;
+						// advance the fixed-step simulation by however many ticks
+						// fit into this frame's elapsed time. doing this before the
+						// camera spring so the spring chases this frame's freshly
+						// stepped player position with zero extra latency.
+						clock.advance(dt * 1000, (tick, dtSec) => world.step(tick, dtSec));
+						const alpha = clock.getInterpolationAlpha();
+						if (followRef.current) {
+							const interpX = player.prevX + (player.x - player.prevX) * alpha;
+							const interpY = player.prevY + (player.y - player.prevY) * alpha;
+							const centerX = interpX + player.spriteWidth / 2;
+							const centerY = interpY + player.spriteHeight / 2;
+							cam.targetOffsetX = window.innerWidth / 2 - centerX * cam.targetScale;
+							cam.targetOffsetY = window.innerHeight / 2 - centerY * cam.targetScale;
 						}
 
 						if (dt > 0) {
@@ -317,17 +317,7 @@ function MapPage() {
 							timeMs: elapsedMs,
 							debug: debugRef.current,
 						});
-						drawCloudShadows(offCtx, clouds, elapsedMs);
-						if (followRef.current) {
-							const player = playerRef.current;
-							offCtx.fillStyle = "#000";
-							offCtx.fillRect(
-								Math.round(player.x),
-								Math.round(player.y),
-								PLAYER_SIZE,
-								PLAYER_SIZE
-							);
-						}
+						renderer.drawAll(offCtx, world, true, alpha);
 						ctx.setTransform(1, 0, 0, 1, 0, 0);
 						ctx.imageSmoothingEnabled = false;
 						ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -381,6 +371,8 @@ function MapPage() {
 		return () => {
 			cancelled = true;
 			if (frameHandle !== 0) cancelAnimationFrame(frameHandle);
+			gameRef.current?.world.dispose();
+			gameRef.current = null;
 		};
 	}, []);
 
@@ -482,7 +474,19 @@ function MapPage() {
 							checked={follow}
 							onChange={(e) => setFollow(e.target.checked)}
 						/>
-						follow square (arrow keys)
+						follow player (wasd / arrows)
+					</label>
+					<label className="flex items-center gap-2">
+						<span className="text-neutral-400">tick rate</span>
+						<input
+							type="range"
+							min={MIN_TICK_RATE_HZ}
+							max={MAX_TICK_RATE_HZ}
+							step={1}
+							value={tickRate}
+							onChange={(e) => setTickRate(Number(e.target.value))}
+						/>
+						<span className="tabular-nums">{tickRate} Hz</span>
 					</label>
 				</div>
 				<div className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 tabular-nums">

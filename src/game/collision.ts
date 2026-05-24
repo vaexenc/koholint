@@ -1,0 +1,213 @@
+import {decodeTileGid, EMPTY_TILE_ID} from "@/tiled/gid";
+import type {TiledMap} from "@/tiled/loadMap";
+
+const SOLID_PROPERTY = "solid";
+
+export type SolidGrid = {
+	readonly width: number;
+	readonly height: number;
+	readonly tileWidth: number;
+	readonly tileHeight: number;
+	readonly cells: Uint8Array;
+};
+
+export type Aabb = {
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+};
+
+// scans every tile layer and stamps a 1 wherever the underlying tileset tile
+// is tagged solid in tiled. flips don't affect collidability so we just mask
+// the gid down to its raw id. multiple layers OR together, so a walkable
+// surface drawn beneath a solid prop still results in a solid cell.
+export function buildSolidGrid(map: TiledMap): SolidGrid {
+	const solidIds = collectSolidTileIds(map);
+	const cells = new Uint8Array(map.width * map.height);
+	for (const layer of iterateTileLayers(map)) {
+		if (!Array.isArray(layer.data)) continue;
+		for (let i = 0; i < layer.data.length; i++) {
+			const gid = layer.data[i];
+			if (gid === EMPTY_TILE_ID) continue;
+			const {id} = decodeTileGid(gid);
+			if (!solidIds.has(id)) continue;
+			const col = i % layer.width;
+			const row = Math.floor(i / layer.width);
+			cells[row * map.width + col] = 1;
+		}
+	}
+	return {
+		width: map.width,
+		height: map.height,
+		tileWidth: map.tilewidth,
+		tileHeight: map.tileheight,
+		cells,
+	};
+}
+
+export function isCellSolid(grid: SolidGrid, col: number, row: number): boolean {
+	if (col < 0 || row < 0 || col >= grid.width || row >= grid.height) return true;
+	return grid.cells[row * grid.width + col] === 1;
+}
+
+// true when no solid cell overlaps the box. epsilon matches sweepAxis so a
+// box flush against a tile boundary doesn't count the neighbour cell.
+export function isAabbFree(grid: SolidGrid, box: Aabb): boolean {
+	const minCol = Math.floor(box.x / grid.tileWidth);
+	const maxCol = Math.floor((box.x + box.width - 1e-6) / grid.tileWidth);
+	const minRow = Math.floor(box.y / grid.tileHeight);
+	const maxRow = Math.floor((box.y + box.height - 1e-6) / grid.tileHeight);
+	for (let row = minRow; row <= maxRow; row++) {
+		for (let col = minCol; col <= maxCol; col++) {
+			if (isCellSolid(grid, col, row)) return false;
+		}
+	}
+	return true;
+}
+
+export type NearestFreeOptions = {
+	readonly maxRadiusPx?: number;
+	readonly stepPx?: number;
+};
+
+// expanding-ring search by chebyshev distance, returning the free position
+// nearest the input by euclidean distance. correctness relies on the fact
+// that euclidean >= chebyshev, so once the current ring radius exceeds the
+// best euclidean distance found so far, no later ring can improve on it.
+//
+// each ring is the perimeter of a square at chebyshev radius r: full top/
+// bottom rows, plus the two outer columns of intermediate rows. step lets
+// callers trade precision for speed; default is 1px.
+export function findNearestFreeAabb(
+	grid: SolidGrid,
+	box: Aabb,
+	options: NearestFreeOptions = {}
+): Aabb | null {
+	if (isAabbFree(grid, box)) return box;
+	const step = Math.max(1, Math.floor(options.stepPx ?? 1));
+	const defaultRadius = Math.max(grid.tileWidth, grid.tileHeight) * 16;
+	const maxRadius = Math.max(step, Math.floor(options.maxRadiusPx ?? defaultRadius));
+	let bestX = box.x;
+	let bestY = box.y;
+	let bestDistSq = Infinity;
+	for (let r = step; r <= maxRadius; r += step) {
+		if (r * r > bestDistSq) break;
+		for (let dy = -r; dy <= r; dy += step) {
+			const fullRow = Math.abs(dy) === r;
+			const dxStep = fullRow ? step : 2 * r;
+			for (let dx = -r; dx <= r; dx += dxStep) {
+				const distSq = dx * dx + dy * dy;
+				if (distSq >= bestDistSq) continue;
+				const candidate: Aabb = {
+					x: box.x + dx,
+					y: box.y + dy,
+					width: box.width,
+					height: box.height,
+				};
+				if (!isAabbFree(grid, candidate)) continue;
+				bestDistSq = distSq;
+				bestX = candidate.x;
+				bestY = candidate.y;
+			}
+		}
+	}
+	if (bestDistSq === Infinity) return null;
+	return {x: bestX, y: bestY, width: box.width, height: box.height};
+}
+
+// axis-separated swept move. returns the post-collision aabb position. each
+// axis is resolved independently so the body slides along walls rather than
+// snagging at corners. the world bounds are treated as solid via isCellSolid.
+export function moveAabb(grid: SolidGrid, box: Aabb, dx: number, dy: number): Aabb {
+	const afterX = sweepAxis(grid, box, dx, "x");
+	const afterBoth = sweepAxis(grid, afterX, dy, "y");
+	return afterBoth;
+}
+
+function sweepAxis(grid: SolidGrid, box: Aabb, delta: number, axis: "x" | "y"): Aabb {
+	if (delta === 0) return box;
+	const target = (axis === "x" ? box.x : box.y) + delta;
+	const blocked = findBlockingEdge(grid, box, target, axis, delta > 0);
+	const resolved = blocked ?? target;
+	return axis === "x" ? {...box, x: resolved} : {...box, y: resolved};
+}
+
+function findBlockingEdge(
+	grid: SolidGrid,
+	box: Aabb,
+	target: number,
+	axis: "x" | "y",
+	movingPositive: boolean
+): number | null {
+	const tileSize = axis === "x" ? grid.tileWidth : grid.tileHeight;
+	const perpSize = axis === "x" ? grid.tileHeight : grid.tileWidth;
+	const perpStart = axis === "x" ? box.y : box.x;
+	const perpExtent = axis === "x" ? box.height : box.width;
+	const perpMin = Math.floor(perpStart / perpSize);
+	// `perpStart + perpExtent` is the exclusive far edge; subtract an epsilon
+	// so a body exactly aligned to a tile boundary doesn't claim collisions
+	// against the next row/column it isn't actually overlapping.
+	const perpMax = Math.floor((perpStart + perpExtent - 1e-6) / perpSize);
+	const extent = axis === "x" ? box.width : box.height;
+	if (movingPositive) {
+		const currentFar = (axis === "x" ? box.x : box.y) + extent;
+		const targetFar = target + extent;
+		const startTile = Math.floor(currentFar / tileSize);
+		const endTile = Math.floor((targetFar - 1e-6) / tileSize);
+		for (let t = Math.max(startTile, 0); t <= endTile; t++) {
+			if (anyPerpSolid(grid, axis, t, perpMin, perpMax)) return t * tileSize - extent;
+		}
+	} else {
+		const startTile = Math.floor((axis === "x" ? box.x : box.y) / tileSize) - 1;
+		const endTile = Math.floor(target / tileSize);
+		for (let t = startTile; t >= endTile; t--) {
+			if (anyPerpSolid(grid, axis, t, perpMin, perpMax)) return (t + 1) * tileSize;
+		}
+	}
+	return null;
+}
+
+function anyPerpSolid(
+	grid: SolidGrid,
+	axis: "x" | "y",
+	tile: number,
+	perpMin: number,
+	perpMax: number
+): boolean {
+	for (let p = perpMin; p <= perpMax; p++) {
+		const col = axis === "x" ? tile : p;
+		const row = axis === "x" ? p : tile;
+		if (isCellSolid(grid, col, row)) return true;
+	}
+	return false;
+}
+
+function collectSolidTileIds(map: TiledMap): Set<number> {
+	const ids = new Set<number>();
+	for (const tileset of map.tilesets) {
+		if (!("firstgid" in tileset) || tileset.firstgid === undefined) continue;
+		const tiles = "tiles" in tileset ? tileset.tiles : undefined;
+		if (!tiles) continue;
+		for (const tile of tiles) {
+			const props = tile.properties;
+			if (!props) continue;
+			const solid = props.find((p) => p.name === SOLID_PROPERTY && p.type === "bool");
+			if (solid?.value === true) ids.add(tileset.firstgid + tile.id);
+		}
+	}
+	return ids;
+}
+
+function* iterateTileLayers(map: TiledMap): Generator<{
+	readonly data: number[];
+	readonly width: number;
+}> {
+	const stack: TiledMap["layers"][number][] = [...map.layers];
+	while (stack.length > 0) {
+		const layer = stack.pop()!;
+		if (layer.type === "tilelayer" && Array.isArray(layer.data))
+			yield {data: layer.data as number[], width: layer.width};
+		else if (layer.type === "group") stack.push(...layer.layers);
+	}
+}
