@@ -1,12 +1,10 @@
 import {useEffect, useMemo, useRef, useState} from "react";
-import type {SpriteSheetData} from "../types";
+import type {SpriteAsset, SpriteSheet} from "../types";
 import {
-	CLASSIC_AVATAR_ANIMATIONS,
 	getAnimationFrame,
-	type ClassicAvatarAnimationName,
-	type ResolvedAvatarAnimationFrame,
+	type ResolvedSpriteAnimationFrame,
+	type SpriteAnimation,
 } from "./animations";
-import type {AvatarEntry} from "./registry";
 
 function useSpriteImage(url: string): HTMLImageElement | null {
 	const [img, setImg] = useState<HTMLImageElement | null>(null);
@@ -31,7 +29,7 @@ type SheetPadding = {x: number; y: number};
 // a non-zero offset may stick out either side depending on which axes the
 // active frame is mirrored on; we pad both sides of each axis symmetrically
 // by the largest absolute offset in the sheet.
-function computeSheetPadding(sheet: SpriteSheetData): SheetPadding {
+function computeSheetPadding(sheet: SpriteSheet): SheetPadding {
 	let x = 0;
 	let y = 0;
 	for (const s of sheet) {
@@ -46,7 +44,7 @@ function computeSheetPadding(sheet: SpriteSheetData): SheetPadding {
 function drawFrame(
 	ctx: CanvasRenderingContext2D,
 	image: HTMLImageElement,
-	frame: ResolvedAvatarAnimationFrame,
+	frame: ResolvedSpriteAnimationFrame,
 	scale: number,
 	originX: number,
 	originY: number
@@ -74,23 +72,19 @@ function drawFrame(
 }
 
 type SpriteCanvasProps = {
-	avatar: AvatarEntry;
+	sprite: SpriteAsset;
 	scale: number;
-	animation?: ClassicAvatarAnimationName;
+	animation?: SpriteAnimation;
 	className?: string;
 };
 
-// draws an avatar animation onto a canvas, ticking frames via rAF and
-// flipping horizontally when the active frame is mirrored.
-export function SpriteCanvas({
-	avatar,
-	scale,
-	animation = "stand_down",
-	className,
-}: SpriteCanvasProps) {
+// draws a sprite animation onto a canvas, ticking frames via rAF and
+// flipping horizontally when the active frame is mirrored. when no
+// animation is supplied the first sheet entry is painted once.
+export function SpriteCanvas({sprite, scale, animation, className}: SpriteCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
-	const image = useSpriteImage(avatar.data.imageUrl);
-	const sheet = avatar.data.sheet;
+	const image = useSpriteImage(sprite.imageUrl);
+	const sheet = sprite.sheet;
 	const baseSprite = sheet[0];
 	const padding = useMemo(() => computeSheetPadding(sheet), [sheet]);
 	useEffect(() => {
@@ -98,9 +92,22 @@ export function SpriteCanvas({
 		if (!canvas || !image || !baseSprite) return;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
-		const def = CLASSIC_AVATAR_ANIMATIONS[animation];
 		const originX = padding.x * scale;
 		const originY = padding.y * scale;
+		ctx.imageSmoothingEnabled = false;
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.clearRect(0, 0, canvas.width, canvas.height);
+		if (!animation) {
+			drawFrame(
+				ctx,
+				image,
+				{sprite: baseSprite, mirrorX: false, mirrorY: false},
+				scale,
+				originX,
+				originY
+			);
+			return;
+		}
 		// a cancellation flag (rather than cancelAnimationFrame) means an
 		// already-queued tick that fires after cleanup just returns instead
 		// of trying to draw and re-schedule itself. that avoids a race where
@@ -115,7 +122,7 @@ export function SpriteCanvas({
 		const tick = (now: number) => {
 			if (cancelled) return;
 			if (start < 0) start = now;
-			const frame = getAnimationFrame(sheet, def, now - start);
+			const frame = getAnimationFrame(sheet, animation, now - start);
 			ctx.imageSmoothingEnabled = false;
 			ctx.setTransform(1, 0, 0, 1, 0, 0);
 			ctx.clearRect(0, 0, canvas.width, canvas.height);

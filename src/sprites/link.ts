@@ -1,7 +1,7 @@
-import type {AvatarData} from "../types";
+import type {SpriteAsset} from "../types";
 
-export const NayruAvatar: AvatarData = {
-	"imageUrl": "/images/sprites/nayru.png",
+export const LinkSpriteAsset: SpriteAsset = {
+	"imageUrl": "/images/sprites/link.png",
 	"sheet": [
 		{
 			index: 0,
@@ -30,11 +30,10 @@ export const NayruAvatar: AvatarData = {
 			y: 0,
 			width: 16,
 			height: 16,
-			offsetX: 1,
 		},
 	],
 	"palette": {
-		0: ["#1984ff"],
+		0: ["#10ad42"],
 		1: ["#ffd68c"],
 	},
 };

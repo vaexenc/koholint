@@ -1,4 +1,4 @@
-import {useEffect, useState} from "react";
+import {AVATARS, type Avatar} from "@/avatars/registry";
 import {Button} from "@/components/ui/button";
 import {
 	Dialog,
@@ -7,14 +7,17 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@/components/ui/dialog";
-import type {ClassicAvatarAnimationName} from "@/avatars/animations";
-import {AVATARS, type AvatarEntry} from "@/avatars/registry";
-import {SpriteCanvas} from "@/avatars/SpriteCanvas";
+import {
+	CLASSIC_CHARACTER_ANIMATIONS,
+	type ClassicCharacterAnimationName,
+} from "@/sprites/animations";
+import {SpriteCanvas} from "@/sprites/SpriteCanvas";
+import {useEffect, useState} from "react";
 
 const PREVIEW_POSE_INTERVAL_MS = 1000;
 
 // clockwise from facing-down: down → left → up → right → down → …
-const PREVIEW_ANIMATION_CYCLE: readonly ClassicAvatarAnimationName[] = [
+const PREVIEW_ANIMATION_CYCLE: readonly ClassicCharacterAnimationName[] = [
 	"walk_down",
 	"walk_left",
 	"walk_up",
@@ -36,7 +39,7 @@ function useCycle<T>(items: readonly T[], intervalMs: number, active: boolean): 
 }
 
 type AvatarListItemProps = {
-	avatar: AvatarEntry;
+	avatar: Avatar;
 	selected: boolean;
 	onSelect: (id: string) => void;
 };
@@ -53,7 +56,7 @@ function AvatarListItem({avatar, selected, onSelect}: AvatarListItemProps) {
 					(selected ? "border-primary bg-muted" : "border-border hover:bg-muted/50")
 				}
 			>
-				<SpriteCanvas avatar={avatar} scale={2} />
+				<SpriteCanvas sprite={avatar.sprite} scale={2} />
 				<span>{avatar.name}</span>
 			</button>
 		</li>
@@ -87,7 +90,11 @@ export function AvatarPickerDialog() {
 						))}
 					</ul>
 					<div className="flex flex-1 items-center justify-center rounded-md border border-border bg-muted/30 p-6">
-						<SpriteCanvas avatar={selected} scale={8} animation={previewAnimation} />
+						<SpriteCanvas
+							sprite={selected.sprite}
+							scale={8}
+							animation={CLASSIC_CHARACTER_ANIMATIONS[previewAnimation]}
+						/>
 					</div>
 				</div>
 			</DialogContent>

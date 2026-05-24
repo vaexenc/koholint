@@ -1,14 +1,14 @@
-import type {AvatarData} from "../types";
-import {LinkAvatar} from "./link";
-import {NayruAvatar} from "./nayru";
+import {LinkSpriteAsset} from "../sprites/link";
+import {NayruSpriteAsset} from "../sprites/nayru";
+import type {SpriteAsset} from "../types";
 
-export type AvatarEntry = {
+export type Avatar = {
 	id: string;
 	name: string;
-	data: AvatarData;
+	sprite: SpriteAsset;
 };
 
-export const AVATARS: readonly AvatarEntry[] = [
-	{id: "link", name: "Link", data: LinkAvatar},
-	{id: "nayru", name: "Nayru", data: NayruAvatar},
+export const AVATARS: readonly Avatar[] = [
+	{id: "link", name: "Link", sprite: LinkSpriteAsset},
+	{id: "nayru", name: "Nayru", sprite: NayruSpriteAsset},
 ];
