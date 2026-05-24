@@ -7092,7 +7092,13 @@
                      "visible":true,
                      "x":0,
                      "y":0
-                    }
+                    },
+                 "properties":[
+                        {
+                         "name":"cliff",
+                         "type":"bool",
+                         "value":true
+                        }]
                 }, 
                 {
                  "id":272,
@@ -7118,7 +7124,13 @@
                      "visible":true,
                      "x":0,
                      "y":0
-                    }
+                    },
+                 "properties":[
+                        {
+                         "name":"cliff",
+                         "type":"bool",
+                         "value":true
+                        }]
                 }, 
                 {
                  "id":273,
@@ -7144,7 +7156,13 @@
                      "visible":true,
                      "x":0,
                      "y":0
-                    }
+                    },
+                 "properties":[
+                        {
+                         "name":"cliff",
+                         "type":"bool",
+                         "value":true
+                        }]
                 }, 
                 {
                  "id":274,

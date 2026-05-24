@@ -1,9 +1,12 @@
 import type {SpriteAsset, SpritePalette} from "@/types";
 import {
+	aabbOverlapsCliff,
+	findCliffLanding,
 	findNearestFreeAabb,
 	moveAabb,
 	unionGrids,
 	type Aabb,
+	type CliffGrid,
 	type HoleGrid,
 	type SolidGrid,
 } from "./collision";
@@ -112,7 +115,8 @@ export function stepCharacter(
 	dtSec: number,
 	grid: SolidGrid,
 	terrain?: TerrainGrid,
-	holes?: HoleGrid
+	holes?: HoleGrid,
+	cliffs?: CliffGrid
 ): void {
 	char.prevX = char.x;
 	char.prevY = char.y;
@@ -146,6 +150,10 @@ export function stepCharacter(
 			advanceJump(char, dtSec);
 			return;
 		}
+		if (cliffs && tryCliffJump(char, before, result.position, grid, holes, cliffs)) {
+			advanceJump(char, dtSec);
+			return;
+		}
 		char.x = endX;
 		char.y = endY;
 		char.walking = true;
@@ -154,6 +162,29 @@ export function stepCharacter(
 		char.walking = false;
 		char.animTimeMs = 0;
 	}
+}
+
+// edge-triggered cliff drop: a footprint that wasn't overlapping any cliff
+// region last frame and now is gets launched downward to the first row that's
+// clear of solid, hole, and cliff. preserves this frame's horizontal motion
+// so diagonal approaches still read as diagonal hops. no-ops when the fall
+// path is walled in so designers get a hard stop rather than a stuck body.
+function tryCliffJump(
+	char: BasicCharacter,
+	before: Aabb,
+	after: Aabb,
+	grid: SolidGrid,
+	holes: HoleGrid | undefined,
+	cliffs: CliffGrid
+): boolean {
+	if (aabbOverlapsCliff(before, cliffs)) return false;
+	if (!aabbOverlapsCliff(after, cliffs)) return false;
+	const landing = findCliffLanding(grid, holes, cliffs, after);
+	if (!landing) return false;
+	const endX = char.x + (after.x - before.x);
+	const endY = char.y + (landing.y - before.y);
+	startJump(char, endX, endY);
+	return true;
 }
 
 function startJump(char: BasicCharacter, endX: number, endY: number): void {

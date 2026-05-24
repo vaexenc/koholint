@@ -1,4 +1,8 @@
-import type {ITiledMapObject, ITiledMapObjectLayer} from "@workadventure/tiled-map-type-guard";
+import type {
+	ITiledMapObject,
+	ITiledMapObjectLayer,
+	ITiledMapTile,
+} from "@workadventure/tiled-map-type-guard";
 import {decodeTileGid, EMPTY_TILE_ID} from "./gid";
 import type {TiledMap} from "./loadMap";
 
@@ -40,16 +44,26 @@ export function hasBoolProperty(
 // boolean property set to true. used to bridge "this tileset tile means X"
 // metadata into per-cell grids the simulation can sample cheaply.
 export function collectTileIdsWithBoolProperty(map: TiledMap, name: string): Set<number> {
-	const ids = new Set<number>();
+	return new Set(collectTilesWithBoolProperty(map, name).keys());
+}
+
+// richer sibling of collectTileIdsWithBoolProperty: also returns the tileset
+// tile definition so callers that need per-tile metadata (e.g. objectgroup
+// sub-rectangles for custom collision shapes) don't have to re-scan tilesets.
+export function collectTilesWithBoolProperty(
+	map: TiledMap,
+	name: string
+): Map<number, ITiledMapTile> {
+	const out = new Map<number, ITiledMapTile>();
 	for (const tileset of map.tilesets) {
 		if (!("firstgid" in tileset) || tileset.firstgid === undefined) continue;
 		const tiles = "tiles" in tileset ? tileset.tiles : undefined;
 		if (!tiles) continue;
 		for (const tile of tiles) {
-			if (hasBoolProperty(tile.properties, name)) ids.add(tileset.firstgid + tile.id);
+			if (hasBoolProperty(tile.properties, name)) out.set(tileset.firstgid + tile.id, tile);
 		}
 	}
-	return ids;
+	return out;
 }
 
 // walks every tile layer once and invokes `visit(col, row)` for each cell
@@ -60,6 +74,16 @@ export function forEachTaggedCell(
 	ids: ReadonlySet<number>,
 	visit: (col: number, row: number) => void
 ): void {
+	forEachTaggedCellWithGid(map, ids, (col, row) => visit(col, row));
+}
+
+// like forEachTaggedCell but also passes the decoded tile id so visitors can
+// look up per-tile metadata for the matched cell.
+export function forEachTaggedCellWithGid(
+	map: TiledMap,
+	ids: ReadonlySet<number>,
+	visit: (col: number, row: number, id: number) => void
+): void {
 	if (ids.size === 0) return;
 	for (const layer of iterateTileLayers(map)) {
 		for (let i = 0; i < layer.data.length; i++) {
@@ -67,7 +91,7 @@ export function forEachTaggedCell(
 			if (gid === EMPTY_TILE_ID) continue;
 			const {id} = decodeTileGid(gid);
 			if (!ids.has(id)) continue;
-			visit(i % layer.width, Math.floor(i / layer.width));
+			visit(i % layer.width, Math.floor(i / layer.width), id);
 		}
 	}
 }

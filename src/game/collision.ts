@@ -1,7 +1,9 @@
 import type {TiledMap} from "@/tiled/loadMap";
 import {
 	collectTileIdsWithBoolProperty,
+	collectTilesWithBoolProperty,
 	forEachTaggedCell,
+	forEachTaggedCellWithGid,
 	hasBoolProperty,
 	iterateObjectLayers,
 } from "@/tiled/tileScan";
@@ -9,6 +11,7 @@ import type {ITiledMapObject} from "@workadventure/tiled-map-type-guard";
 
 const SOLID_PROPERTY = "solid";
 const HOLE_PROPERTY = "hole";
+const CLIFF_PROPERTY = "cliff";
 
 export type SolidGrid = {
 	readonly width: number;
@@ -64,6 +67,85 @@ export function buildSolidGrid(map: TiledMap): SolidGrid {
 
 export function buildHoleGrid(map: TiledMap): HoleGrid {
 	return buildBoolPropertyGrid(map, HOLE_PROPERTY);
+}
+
+// cliffs are walkable on most of the tile surface; only a sub-rectangle (the
+// fall edge, defined per-tile via tiled's collision editor) triggers a hop.
+// the grid is just a flat list of those sub-rectangles in world coordinates,
+// kept alongside map dimensions for parity with the other grid types.
+export type CliffGrid = {
+	readonly width: number;
+	readonly height: number;
+	readonly tileWidth: number;
+	readonly tileHeight: number;
+	readonly regions: ReadonlyArray<Aabb>;
+};
+
+export function buildCliffGrid(map: TiledMap): CliffGrid {
+	const tiles = collectTilesWithBoolProperty(map, CLIFF_PROPERTY);
+	const regions: Aabb[] = [];
+	forEachTaggedCellWithGid(map, new Set(tiles.keys()), (col, row, id) => {
+		const tile = tiles.get(id);
+		const objects = tile?.objectgroup?.objects;
+		if (!objects) return;
+		for (const obj of objects) {
+			const rect = objectAabb(obj);
+			if (!rect) continue;
+			regions.push({
+				x: col * map.tilewidth + rect.x,
+				y: row * map.tileheight + rect.y,
+				width: rect.width,
+				height: rect.height,
+			});
+		}
+	});
+	return {
+		width: map.width,
+		height: map.height,
+		tileWidth: map.tilewidth,
+		tileHeight: map.tileheight,
+		regions,
+	};
+}
+
+function aabbsOverlap(a: Aabb, b: Aabb): boolean {
+	return (
+		a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+	);
+}
+
+export function aabbOverlapsCliff(box: Aabb, cliffs: CliffGrid): boolean {
+	for (const region of cliffs.regions) if (aabbsOverlap(box, region)) return true;
+	return false;
+}
+
+// scans rows below `box` for the first one where the footprint stands clear
+// of solid, hole, and cliff. solid rows between the cliff edge and the
+// landing (the cliff face itself) are skipped — the body arcs over them. y
+// snaps to the row top so the body rests flush against the tile, mirroring
+// landingPosition's hole-jump snapping. returns null only when no clear row
+// exists before the map ends.
+export function findCliffLanding(
+	grid: SolidGrid,
+	holes: HoleGrid | undefined,
+	cliffs: CliffGrid,
+	box: Aabb
+): Aabb | null {
+	const tileHeight = grid.tileHeight;
+	const startRow = Math.floor((box.y + box.height - 1e-6) / tileHeight) + 1;
+	for (let row = startRow; row < grid.height; row++) {
+		const candidate: Aabb = {
+			x: box.x,
+			y: row * tileHeight,
+			width: box.width,
+			height: box.height,
+		};
+		if (!isAabbFree(grid, candidate)) continue;
+		if (aabbOverlapsCliff(candidate, cliffs)) continue;
+		if (holes && aabbOverlapsHole(holes, candidate)) continue;
+		return candidate;
+	}
+	return null;
 }
 
 // bitwise-ORs two same-shape grids. used to treat holes as solid during
@@ -476,17 +558,20 @@ function tryCornerNudge(
 // so the body never slides off a wall into a pit or off the map.
 function isAabbClear(grid: SolidGrid, holes: HoleGrid | undefined, box: Aabb): boolean {
 	if (!isAabbFree(grid, box)) return false;
-	if (!holes) return true;
-	const minCol = Math.floor(box.x / grid.tileWidth);
-	const maxCol = Math.floor((box.x + box.width - 1e-6) / grid.tileWidth);
-	const minRow = Math.floor(box.y / grid.tileHeight);
-	const maxRow = Math.floor((box.y + box.height - 1e-6) / grid.tileHeight);
+	return holes ? !aabbOverlapsHole(holes, box) : true;
+}
+
+function aabbOverlapsHole(holes: HoleGrid, box: Aabb): boolean {
+	const minCol = Math.floor(box.x / holes.tileWidth);
+	const maxCol = Math.floor((box.x + box.width - 1e-6) / holes.tileWidth);
+	const minRow = Math.floor(box.y / holes.tileHeight);
+	const maxRow = Math.floor((box.y + box.height - 1e-6) / holes.tileHeight);
 	for (let row = minRow; row <= maxRow; row++) {
 		for (let col = minCol; col <= maxCol; col++) {
-			if (isCellHole(holes, col, row)) return false;
+			if (isCellHole(holes, col, row)) return true;
 		}
 	}
-	return true;
+	return false;
 }
 
 // tile-objects use tiled's bottom-origin convention (y marks the sprite's

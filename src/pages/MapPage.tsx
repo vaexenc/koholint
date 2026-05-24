@@ -2,6 +2,7 @@ import {type ChatMessage} from "@/components/Chat";
 import ChatPanel from "@/components/ChatPanel";
 
 import {
+	buildCliffGrid,
 	buildHoleGrid,
 	buildSolidGrid,
 	buildTerrainGrid,
@@ -224,7 +225,12 @@ function MapPage() {
 					const solidGrid = buildSolidGrid(map);
 					const terrainGrid = buildTerrainGrid(map);
 					const holeGrid = buildHoleGrid(map);
-					const world = new World(solidGrid, {terrain: terrainGrid, holes: holeGrid});
+					const cliffGrid = buildCliffGrid(map);
+					const world = new World(solidGrid, {
+						terrain: terrainGrid,
+						holes: holeGrid,
+						cliffs: cliffGrid,
+					});
 					const clock = new GameClock(tickRateRef.current);
 					const renderer = new CharacterRenderer();
 					const playerStart = {
