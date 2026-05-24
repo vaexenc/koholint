@@ -1,3 +1,4 @@
+import ChatPanel, {type ChatMessage} from "@/components/ChatPanel";
 import {buildAnimationTable} from "@/tiled/animation";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
 import {renderTiledMap} from "@/tiled/renderer";
@@ -20,6 +21,99 @@ const PLAYER_SIZE = 14;
 // player movement speed in map pixels per second (~5 tiles/sec at 16px tiles).
 const PLAYER_SPEED = 80;
 const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+
+const CURRENT_USER = {name: "pixelwitch", color: "#1E90FF"};
+const SEED_AVATAR = "/images/sprites/windfish.png";
+
+type SeedEntry =
+	| {kind: "chat"; name: string; color: string; text: string}
+	| {kind: "system"; text: string};
+
+// seed transcript: built once at module load. timestamps are randomized within
+// the last hour and then sorted so the visible order still reads like a real
+// chronological chat backlog.
+const SEED_ENTRIES: SeedEntry[] = [
+	{kind: "system", text: "welcome to koholint chat"},
+	{
+		kind: "chat",
+		name: "linkmainas",
+		color: "#FF0000",
+		text: "anyone find the boss key in turtle rock?",
+	},
+	{
+		kind: "chat",
+		name: "moblinhunter",
+		color: "#FF7F50",
+		text: "yeah, sw corner. cracked wall, bomb it",
+	},
+	{kind: "chat", name: "linkmainas", color: "#FF0000", text: "ty"},
+	{
+		kind: "chat",
+		name: "marin_dreams",
+		color: "#DAA520",
+		text: "playing dx for the nth time, the colors still pop",
+	},
+	{
+		kind: "chat",
+		name: "crowsong",
+		color: "#8A2BE2",
+		text: "first time on the original, where do i get the bow",
+	},
+	{kind: "system", text: "be kind — koholint is small"},
+	{kind: "chat", name: "tarinfan", color: "#FF69B4", text: "level 7 i think? eagle's tower"},
+	{
+		kind: "chat",
+		name: "riptide99",
+		color: "#9ACD32",
+		text: "yeah it's eagle's tower. tail cave is just roc's feather",
+	},
+	{
+		kind: "chat",
+		name: "saltbreeze",
+		color: "#00FF7F",
+		text: "bow + arrows show up pretty late, don't stress it",
+	},
+	{kind: "chat", name: "crowsong", color: "#8A2BE2", text: "ok thx"},
+	{kind: "chat", name: "pixelwitch", color: "#1E90FF", text: "marin's ballad still slaps"},
+	{kind: "chat", name: "waveform", color: "#DAA520", text: "anyone speedrunning today?"},
+	{
+		kind: "chat",
+		name: "shellracer",
+		color: "#FF0000",
+		text: "any% wr is wild, sub 4 minutes now",
+	},
+	{kind: "chat", name: "moblinhunter", color: "#FF7F50", text: "the kanalet skip is so clean"},
+	{kind: "system", text: "moblinhunter has been here 32 days"},
+	{kind: "chat", name: "tarinfan", color: "#FF69B4", text: ""},
+	{
+		kind: "chat",
+		name: "marin_dreams",
+		color: "#DAA520",
+		text: "",
+	},
+];
+
+const SEED_MESSAGES: ChatMessage[] = (() => {
+	const now = Date.now();
+	const offsets = SEED_ENTRIES.map(() => Math.floor(Math.random() * 3600000)).sort(
+		(a, b) => b - a
+	);
+	return SEED_ENTRIES.map((e, i) => {
+		const timestamp = now - offsets[i];
+		const id = crypto.randomUUID();
+		return e.kind === "chat"
+			? {
+					id,
+					kind: "chat",
+					name: e.name,
+					color: e.color,
+					text: e.text,
+					timestamp,
+					avatarUrl: SEED_AVATAR,
+			  }
+			: {id, kind: "system", text: e.text, timestamp};
+	});
+})();
 
 type LoadState =
 	| {status: "loading"}
@@ -361,6 +455,7 @@ function MapPage() {
 				onPointerCancel={onPointerUp}
 				onWheel={onWheel}
 			/>
+			<ChatPanel currentUser={CURRENT_USER} initialMessages={SEED_MESSAGES} />
 			<div className="absolute top-2 right-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
 				{state.status === "loading" && <p>loading map…</p>}
 				{state.status === "error" && (
