@@ -1,4 +1,5 @@
-import ChatPanel, {type ChatMessage} from "@/components/ChatPanel";
+import {type ChatMessage} from "@/components/Chat";
+import ChatPanel from "@/components/ChatPanel";
 import {buildAnimationTable} from "@/tiled/animation";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
 import {renderTiledMap} from "@/tiled/renderer";
@@ -457,7 +458,7 @@ function MapPage() {
 				onWheel={onWheel}
 			/>
 			<ChatPanel currentUser={CURRENT_USER} initialMessages={SEED_MESSAGES} />
-			<div className="absolute top-2 right-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
+			<div className="absolute top-2 left-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
 				{state.status === "loading" && <p>loading map…</p>}
 				{state.status === "error" && (
 					<pre className="whitespace-pre-wrap text-red-400">{state.message}</pre>
