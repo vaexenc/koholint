@@ -166,21 +166,44 @@ export type MoveResult = {
 	readonly jumped: boolean;
 };
 
+export type MoveOptions = {
+	// max perpendicular clip (px) considered correctable. a body deeper than
+	// this against a corner blocks normally. 0 disables corner correction.
+	readonly cornerSlackPx?: number;
+	// max perpendicular distance the body is allowed to slide per call. lets
+	// callers spread the correction across multiple frames so the slide reads
+	// as motion instead of a single-frame pop. defaults to Infinity (the full
+	// overlap resolves in one call).
+	readonly maxCornerNudgePx?: number;
+};
+
 // axis-separated swept move. each axis is resolved independently so the body
 // slides along walls rather than snagging at corners. world bounds are treated
 // as solid via isCellSolid. when a hole grid is supplied, a body that would
 // walk into a hole instead skips past the contiguous hole strip onto the first
 // non-hole non-solid tile beyond it; if no such landing exists the hole blocks
-// like a wall.
+// like a wall. cornerSlackPx (see MoveOptions) lets the sweep nudge the body
+// perpendicular to its motion to unstick from a near-miss corner clip.
 export function moveAabb(
 	grid: SolidGrid,
 	box: Aabb,
 	dx: number,
 	dy: number,
-	holes?: HoleGrid
+	holes?: HoleGrid,
+	options: MoveOptions = {}
 ): MoveResult {
-	const afterX = sweepAxis(grid, box, dx, "x", holes);
-	const afterBoth = sweepAxis(grid, afterX.position, dy, "y", holes);
+	const slack = Math.max(0, options.cornerSlackPx ?? 0);
+	const maxNudge = Math.max(0, options.maxCornerNudgePx ?? Infinity);
+	// corner-slide only assists axes the player isn't already steering. with
+	// perp input the player's own motion either clears the corner naturally
+	// (would otherwise read as a speed boost) or expresses intent to push
+	// into the corner (would otherwise read as the body being shoved back
+	// and running in place). slide stays active for pure-axis moves where
+	// there's no natural perp progress to rely on.
+	const slackX = dy === 0 ? slack : 0;
+	const slackY = dx === 0 ? slack : 0;
+	const afterX = sweepAxis(grid, box, dx, "x", holes, slackX, maxNudge);
+	const afterBoth = sweepAxis(grid, afterX.position, dy, "y", holes, slackY, maxNudge);
 	return {position: afterBoth.position, jumped: afterX.jumped || afterBoth.jumped};
 }
 
@@ -193,7 +216,9 @@ function sweepAxis(
 	box: Aabb,
 	delta: number,
 	axis: Axis,
-	holes: HoleGrid | undefined
+	holes: HoleGrid | undefined,
+	slackPx: number,
+	maxNudgePx: number
 ): SweepResult {
 	if (delta === 0) return {position: box, jumped: false};
 	const movingPositive = delta > 0;
@@ -210,6 +235,25 @@ function sweepAxis(
 	const target = (axis === "x" ? box.x : box.y) + delta;
 	const range = scanRange(box, target, axis, extent, tileSize, movingPositive);
 	const blocker = findFirstBlocker(grid, holes, axis, perpMin, perpMax, range, movingPositive);
+	if (blocker && slackPx > 0 && maxNudgePx > 0) {
+		const nudged = tryCornerNudge(
+			grid,
+			holes,
+			box,
+			axis,
+			blocker.tile,
+			perpMin,
+			perpMax,
+			perpSize,
+			slackPx,
+			maxNudgePx
+		);
+		// recurse with slack=0 so a nudge can never trigger another nudge.
+		// the recursed sweep may still find the same blocker (when the nudge
+		// was partial); in that case forward motion clamps and only the perp
+		// slide registers this frame — exactly the smooth-slide we want.
+		if (nudged) return sweepAxis(grid, nudged, delta, axis, holes, 0, 0);
+	}
 	const outcome = resolveSweep(
 		grid,
 		holes,
@@ -364,6 +408,85 @@ function anyPerpHole(
 		if (isCellHole(grid, col, row)) return true;
 	}
 	return false;
+}
+
+function cellObstructs(
+	grid: SolidGrid,
+	holes: HoleGrid | undefined,
+	col: number,
+	row: number
+): boolean {
+	if (isCellSolid(grid, col, row)) return true;
+	return holes ? isCellHole(holes, col, row) : false;
+}
+
+// classic "corner correction": when a sweep is blocked by a tile the body
+// only clips on one perpendicular side, and the clip depth is within slack,
+// nudge the body perpendicular to its motion so the sweep can continue past
+// the corner. only fires when the perp footprint spans exactly two cells —
+// boxes overlapping more than two perp cells can't be unstuck with a small
+// nudge. the nudge is capped at maxNudgePx so a deep clip resolves smoothly
+// across several frames instead of popping in one. validity is checked
+// against the fully-slid box (not the partially-slid one) so partial slides
+// that still overlap the blocker aren't rejected; the body's perp footprint
+// only contracts toward the unblocked side as it slides, so any intermediate
+// position is safe whenever the final one is.
+function tryCornerNudge(
+	grid: SolidGrid,
+	holes: HoleGrid | undefined,
+	box: Aabb,
+	axis: Axis,
+	blockerTile: number,
+	perpMin: number,
+	perpMax: number,
+	perpSize: number,
+	slackPx: number,
+	maxNudgePx: number
+): Aabb | null {
+	if (perpMax - perpMin !== 1) return null;
+	const minCol = axis === "x" ? blockerTile : perpMin;
+	const minRow = axis === "x" ? perpMin : blockerTile;
+	const maxCol = axis === "x" ? blockerTile : perpMax;
+	const maxRow = axis === "x" ? perpMax : blockerTile;
+	const minBlocked = cellObstructs(grid, holes, minCol, minRow);
+	const maxBlocked = cellObstructs(grid, holes, maxCol, maxRow);
+	if (minBlocked === maxBlocked) return null;
+	const perpStart = axis === "x" ? box.y : box.x;
+	const perpExtent = axis === "x" ? box.height : box.width;
+	const boundary = perpMax * perpSize;
+	const overlap = minBlocked ? boundary - perpStart : perpStart + perpExtent - boundary;
+	if (overlap <= 0 || overlap > slackPx) return null;
+	const direction = minBlocked ? 1 : -1;
+	const fullMagnitude = overlap + 1e-3;
+	const fullShift = direction * fullMagnitude;
+	const fullBox: Aabb =
+		axis === "x" ? {...box, y: box.y + fullShift} : {...box, x: box.x + fullShift};
+	if (!isAabbClear(grid, holes, fullBox)) return null;
+	// apply only as much of the slide as fits this frame's budget. partial
+	// shifts leave the body overlapping the blocker cell; the recursed sweep
+	// then clamps forward motion at the wall while the perp coord advances,
+	// producing a smooth multi-frame slide.
+	const magnitude = Math.min(fullMagnitude, maxNudgePx);
+	const shift = direction * magnitude;
+	return axis === "x" ? {...box, y: box.y + shift} : {...box, x: box.x + shift};
+}
+
+// like isAabbFree but also rejects boxes overlapping a hole when a hole grid
+// is supplied. used to validate the destination of a corner-correction slide
+// so the body never slides off a wall into a pit or off the map.
+function isAabbClear(grid: SolidGrid, holes: HoleGrid | undefined, box: Aabb): boolean {
+	if (!isAabbFree(grid, box)) return false;
+	if (!holes) return true;
+	const minCol = Math.floor(box.x / grid.tileWidth);
+	const maxCol = Math.floor((box.x + box.width - 1e-6) / grid.tileWidth);
+	const minRow = Math.floor(box.y / grid.tileHeight);
+	const maxRow = Math.floor((box.y + box.height - 1e-6) / grid.tileHeight);
+	for (let row = minRow; row <= maxRow; row++) {
+		for (let col = minCol; col <= maxCol; col++) {
+			if (isCellHole(holes, col, row)) return false;
+		}
+	}
+	return true;
 }
 
 // tile-objects use tiled's bottom-origin convention (y marks the sprite's

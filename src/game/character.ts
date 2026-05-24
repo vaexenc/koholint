@@ -16,6 +16,9 @@ export const DEFAULT_COLLISION_BOX = {x: 2, y: 8, width: 12, height: 8} as const
 
 export const DEFAULT_CHARACTER_SPEED = 64;
 
+// todo: comment
+export const DEFAULT_CORNER_SLIDE_PX = 7;
+
 // hop-over-hole timing. duration is short enough that input lockout is barely
 // noticeable; peak height matches the GB sprite-jump look.
 export const JUMP_DURATION_MS = 500;
@@ -128,7 +131,13 @@ export function stepCharacter(
 		const stepDist = char.speed * speedMultiplier * dtSec;
 		const moveX = (dx / len) * stepDist;
 		const moveY = (dy / len) * stepDist;
-		const result = moveAabb(grid, before, moveX, moveY, holes);
+		const result = moveAabb(grid, before, moveX, moveY, holes, {
+			cornerSlackPx: DEFAULT_CORNER_SLIDE_PX,
+			// cap the perp slide at this frame's walk distance so corner
+			// correction reads as a smooth glide along the wall rather than
+			// an instant pop to the open side.
+			maxCornerNudgePx: stepDist,
+		});
 		const endX = char.x + (result.position.x - before.x);
 		const endY = char.y + (result.position.y - before.y);
 		char.facing = nextFacing(char.facing, dx, dy);
