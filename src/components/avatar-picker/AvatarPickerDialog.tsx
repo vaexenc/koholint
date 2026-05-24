@@ -151,6 +151,7 @@ export function AvatarPickerDialog() {
 							scale={8}
 							animation={CLASSIC_CHARACTER_ANIMATIONS[previewAnimation]}
 							paletteSwap={paletteSwap}
+							shadow
 						/>
 						<div className="flex flex-wrap justify-center gap-2">
 							<PaletteOffSwatch

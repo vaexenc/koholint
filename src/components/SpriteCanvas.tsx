@@ -72,11 +72,48 @@ function drawFrame(
 	ctx.drawImage(image, sprite.x, sprite.y, sprite.width, sprite.height, 0, 0, w, h);
 }
 
+// art-space shadow tuning. squish flattens the silhouette toward the ground;
+// the offset shifts it down-right so the sprite reads as lit from upper-left.
+const SHADOW_SQUISH_Y = 0.6;
+const SHADOW_OFFSET_X_PX = 3;
+const SHADOW_OFFSET_Y_PX = 1;
+const SHADOW_ALPHA = 0.35;
+
+function drawShadow(
+	ctx: CanvasRenderingContext2D,
+	image: CanvasImageSource,
+	frame: ResolvedSpriteAnimationFrame,
+	scale: number,
+	originX: number,
+	originY: number
+) {
+	const {sprite, mirrorX, mirrorY} = frame;
+	const w = sprite.width * scale;
+	const h = sprite.height * scale;
+	const dx = originX + (sprite.offsetX ?? 0) * (mirrorX ? -1 : 1) * scale;
+	const dy = originY + (sprite.offsetY ?? 0) * (mirrorY ? -1 : 1) * scale;
+	// match drawFrame's mirror handling, then squish on Y around the sprite's
+	// bottom edge so the flattened silhouette stays anchored to the feet.
+	const sx = mirrorX ? -1 : 1;
+	const sy = (mirrorY ? -1 : 1) * SHADOW_SQUISH_Y;
+	const tx = (mirrorX ? dx + w : dx) + SHADOW_OFFSET_X_PX * scale;
+	const ty = (mirrorY ? dy + h : dy + h * (1 - SHADOW_SQUISH_Y)) + SHADOW_OFFSET_Y_PX * scale;
+	ctx.setTransform(sx, 0, 0, sy, tx, ty);
+	// brightness(0) collapses rgb to black while preserving the sprite's alpha
+	// mask, giving a silhouette without needing an offscreen tint pass.
+	ctx.filter = "brightness(0)";
+	ctx.globalAlpha = SHADOW_ALPHA;
+	ctx.drawImage(image, sprite.x, sprite.y, sprite.width, sprite.height, 0, 0, w, h);
+	ctx.globalAlpha = 1;
+	ctx.filter = "none";
+}
+
 type SpriteCanvasProps = {
 	sprite: SpriteAsset;
 	scale: number;
 	animation?: SpriteAnimation;
 	paletteSwap?: SpritePalette;
+	shadow?: boolean;
 	className?: string;
 };
 
@@ -88,6 +125,7 @@ export function SpriteCanvas({
 	scale,
 	animation,
 	paletteSwap,
+	shadow,
 	className,
 }: SpriteCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -107,25 +145,22 @@ export function SpriteCanvas({
 		[image, colorMap]
 	);
 	const source: CanvasImageSource | null = recolored ?? image;
+	const shadowMarginX = shadow ? SHADOW_OFFSET_X_PX * scale : 0;
+	const shadowMarginY = shadow ? SHADOW_OFFSET_Y_PX * scale : 0;
 	useEffect(() => {
 		const canvas = canvasRef.current;
 		if (!canvas || !source || !baseSprite) return;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
-		const originX = padding.x * scale;
+		const originX = padding.x * scale + shadowMarginX;
 		const originY = padding.y * scale;
 		ctx.imageSmoothingEnabled = false;
 		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 		if (!animation) {
-			drawFrame(
-				ctx,
-				source,
-				{sprite: baseSprite, mirrorX: false, mirrorY: false},
-				scale,
-				originX,
-				originY
-			);
+			const frame = {sprite: baseSprite, mirrorX: false, mirrorY: false};
+			if (shadow) drawShadow(ctx, source, frame, scale, originX, originY);
+			drawFrame(ctx, source, frame, scale, originX, originY);
 			return;
 		}
 		// a cancellation flag (rather than cancelAnimationFrame) means an
@@ -146,20 +181,27 @@ export function SpriteCanvas({
 			ctx.imageSmoothingEnabled = false;
 			ctx.setTransform(1, 0, 0, 1, 0, 0);
 			ctx.clearRect(0, 0, canvas.width, canvas.height);
-			if (frame) drawFrame(ctx, source, frame, scale, originX, originY);
+			if (frame) {
+				if (shadow) drawShadow(ctx, source, frame, scale, originX, originY);
+				drawFrame(ctx, source, frame, scale, originX, originY);
+			}
 			requestAnimationFrame(tick);
 		};
 		requestAnimationFrame(tick);
 		return () => {
 			cancelled = true;
 		};
-	}, [source, baseSprite, scale, animation, sheet, padding]);
+	}, [source, baseSprite, scale, animation, sheet, padding, shadow, shadowMarginX]);
 	if (!baseSprite) return null;
+	// shadow extends past the sprite's right/bottom edges; pad both sides on X
+	// (kept symmetric to avoid layout drift between shadowed and unshadowed
+	// instances) and only the bottom on Y. drawing origin is shifted right by
+	// the left margin so the sprite stays centred within the extended canvas.
 	return (
 		<canvas
 			ref={canvasRef}
-			width={(baseSprite.width + padding.x * 2) * scale}
-			height={(baseSprite.height + padding.y * 2) * scale}
+			width={(baseSprite.width + padding.x * 2) * scale + shadowMarginX * 2}
+			height={(baseSprite.height + padding.y * 2) * scale + shadowMarginY}
 			className={className}
 			style={{imageRendering: "pixelated"}}
 		/>
