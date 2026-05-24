@@ -1,8 +1,13 @@
 import {resolveCharacterCollision, stepCharacter, type BasicCharacter} from "./character";
-import type {SolidGrid} from "./collision";
+import type {HoleGrid, SolidGrid} from "./collision";
 import type {InputProvider} from "./controllers";
 import type {TerrainGrid} from "./terrain";
 import {NEUTRAL_INPUT, type CharacterInput, type EntityId} from "./types";
+
+export type WorldOptions = {
+	readonly terrain?: TerrainGrid;
+	readonly holes?: HoleGrid;
+};
 
 // the authoritative simulation. step() samples each entity's input provider
 // for the tick and feeds the inputs into applyInputs(). splitting the two
@@ -13,15 +18,17 @@ export class World {
 	readonly characters = new Map<EntityId, BasicCharacter>();
 	readonly grid: SolidGrid;
 	readonly terrain?: TerrainGrid;
+	readonly holes?: HoleGrid;
 	private inputProviders = new Map<EntityId, InputProvider>();
 
-	constructor(grid: SolidGrid, terrain?: TerrainGrid) {
+	constructor(grid: SolidGrid, options: WorldOptions = {}) {
 		this.grid = grid;
-		this.terrain = terrain;
+		this.terrain = options.terrain;
+		this.holes = options.holes;
 	}
 
 	addCharacter(character: BasicCharacter, inputProvider: InputProvider): void {
-		resolveCharacterCollision(character, this.grid);
+		resolveCharacterCollision(character, this.grid, this.holes);
 		this.characters.set(character.id, character);
 		this.inputProviders.set(character.id, inputProvider);
 	}
@@ -52,7 +59,7 @@ export class World {
 	applyInputs(inputs: ReadonlyMap<EntityId, CharacterInput>, dtSec: number): void {
 		for (const [id, char] of this.characters) {
 			const input = inputs.get(id) ?? NEUTRAL_INPUT;
-			stepCharacter(char, input, dtSec, this.grid, this.terrain);
+			stepCharacter(char, input, dtSec, this.grid, this.terrain, this.holes);
 		}
 	}
 }

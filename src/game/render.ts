@@ -61,8 +61,11 @@ export class CharacterRenderer {
 		if (!frame) return;
 		const x = renderX(char, alpha);
 		const y = renderY(char, alpha);
+		// jump offset lifts the sprite only; the shadow stays anchored to the
+		// ground projection so it reads as a hop rather than a teleport.
+		const jumpOffset = char.prevJumpOffsetY + (char.jumpOffsetY - char.prevJumpOffsetY) * alpha;
 		if (drawShadows) drawSpriteShadow(ctx, entry.source, frame, 1, x, y);
-		drawSpriteFrame(ctx, entry.source, frame, 1, x, y);
+		drawSpriteFrame(ctx, entry.source, frame, 1, x, y - jumpOffset);
 	}
 
 	private async loadOne(char: BasicCharacter): Promise<void> {

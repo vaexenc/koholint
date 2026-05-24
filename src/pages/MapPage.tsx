@@ -2,6 +2,7 @@ import {type ChatMessage} from "@/components/Chat";
 import ChatPanel from "@/components/ChatPanel";
 
 import {
+	buildHoleGrid,
 	buildSolidGrid,
 	buildTerrainGrid,
 	CharacterRenderer,
@@ -222,7 +223,8 @@ function MapPage() {
 					const mapPixelHeight = map.height * map.tileheight;
 					const solidGrid = buildSolidGrid(map);
 					const terrainGrid = buildTerrainGrid(map);
-					const world = new World(solidGrid, terrainGrid);
+					const holeGrid = buildHoleGrid(map);
+					const world = new World(solidGrid, {terrain: terrainGrid, holes: holeGrid});
 					const clock = new GameClock(tickRateRef.current);
 					const renderer = new CharacterRenderer();
 					const playerStart = {
