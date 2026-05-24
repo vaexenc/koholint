@@ -13,6 +13,7 @@ export type HexColor = `#${string}`;
 export type SpritePalette = Record<number, HexColor[]>;
 
 export type AvatarData = {
+	imageUrl: string;
 	sheet: SpriteSheetData;
 	palette?: SpritePalette;
 };

@@ -1,4 +1,5 @@
 import {useEffect, useMemo, useRef, useState} from "react";
+import type {SpriteSheetData} from "../types";
 import {
 	CLASSIC_AVATAR_ANIMATIONS,
 	getAnimationFrame,
@@ -6,7 +7,6 @@ import {
 	type ResolvedAvatarAnimationFrame,
 } from "./animations";
 import type {AvatarEntry} from "./registry";
-import type {SpriteSheetData} from "../types";
 
 function useSpriteImage(url: string): HTMLImageElement | null {
 	const [img, setImg] = useState<HTMLImageElement | null>(null);
@@ -89,7 +89,7 @@ export function SpriteCanvas({
 	className,
 }: SpriteCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
-	const image = useSpriteImage(avatar.imageUrl);
+	const image = useSpriteImage(avatar.data.imageUrl);
 	const sheet = avatar.data.sheet;
 	const baseSprite = sheet[0];
 	const padding = useMemo(() => computeSheetPadding(sheet), [sheet]);

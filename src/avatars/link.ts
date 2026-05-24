@@ -1,6 +1,7 @@
 import type {AvatarData} from "../types";
 
 export const LinkAvatar: AvatarData = {
+	"imageUrl": "/images/sprites/link.png",
 	"sheet": [
 		{
 			index: 0,

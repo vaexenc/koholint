@@ -1,6 +1,7 @@
 import type {AvatarData} from "../types";
 
 export const NayruAvatar: AvatarData = {
+	"imageUrl": "/images/sprites/nayru.png",
 	"sheet": [
 		{
 			index: 0,
