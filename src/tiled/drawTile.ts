@@ -18,7 +18,7 @@ export function drawTile(
 	ctx.translate(dx + dw / 2, dy + dh / 2);
 	if (flip.diagonal) {
 		ctx.rotate(Math.PI / 2);
-		ctx.scale(1, -1);
+		ctx.scale(-1, 1);
 	}
 	ctx.scale(flip.horizontal ? -1 : 1, flip.vertical ? -1 : 1);
 	ctx.drawImage(rect.image, rect.sx, rect.sy, rect.sw, rect.sh, -dw / 2, -dh / 2, dw, dh);
