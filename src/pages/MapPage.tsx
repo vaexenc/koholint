@@ -12,6 +12,7 @@ import {
 	GameClock,
 	KeyboardInputProvider,
 	RandomInputProvider,
+	resolveCharacterCollision,
 	World,
 	type BasicCharacter,
 } from "@/game";
@@ -34,6 +35,9 @@ const CAMERA_SMOOTHING = 7;
 // max dt we feed the integrator, so a tab regaining focus after a long
 // pause doesn't teleport the camera in one step.
 const MAX_FRAME_DT = 0.1;
+// pointer travel under this many CSS pixels between down and up is treated
+// as a click (teleport) rather than a drag (pan).
+const CLICK_MAX_TRAVEL_PX = 4;
 const PLAYER_CHARACTER_ID = "player-link";
 const NPC_CHARACTER_ID = "npc-nayru";
 const MIN_TICK_RATE_HZ = 5;
@@ -160,6 +164,7 @@ function MapPage() {
 	});
 	const dragRef = useRef<{
 		pointerId: number;
+		button: number;
 		startX: number;
 		startY: number;
 		startOffsetX: number;
@@ -395,6 +400,7 @@ function MapPage() {
 		cam.targetOffsetY = cam.offsetY;
 		dragRef.current = {
 			pointerId: e.pointerId,
+			button: e.button,
 			startX: e.clientX,
 			startY: e.clientY,
 			startOffsetX: cam.offsetX,
@@ -421,11 +427,45 @@ function MapPage() {
 	};
 
 	const onPointerUp = (e: PointerEvent<HTMLCanvasElement>) => {
-		if (dragRef.current?.pointerId === e.pointerId) {
+		const drag = dragRef.current;
+		if (drag?.pointerId === e.pointerId) {
+			const travel = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
+			const wasLeft = drag.button === 0;
 			dragRef.current = null;
 			e.currentTarget.releasePointerCapture(e.pointerId);
 			setIsDragging(false);
+			if (wasLeft && travel <= CLICK_MAX_TRAVEL_PX)
+				teleportPlayerToClient(e.clientX, e.clientY);
 		}
+	};
+
+	// teleports the player so their collision box is centered on the tile under
+	// the given client point. snaps prev = current to suppress the renderer's
+	// inter-tick lerp, cancels any in-flight hop, and nudges out of solids.
+	const teleportPlayerToClient = (clientX: number, clientY: number) => {
+		const game = gameRef.current;
+		const loaded = state.status === "ok" ? state.map : null;
+		if (!game || !loaded) return;
+		const cam = cameraRef.current;
+		const worldX = (clientX - cam.offsetX) / cam.scale;
+		const worldY = (clientY - cam.offsetY) / cam.scale;
+		const tileX = Math.floor(worldX / loaded.tilewidth);
+		const tileY = Math.floor(worldY / loaded.tileheight);
+		if (tileX < 0 || tileY < 0 || tileX >= loaded.width || tileY >= loaded.height) return;
+		const tileCenterX = (tileX + 0.5) * loaded.tilewidth;
+		const tileCenterY = (tileY + 0.5) * loaded.tileheight;
+		const {player} = game;
+		const box = player.collisionBox;
+		player.x = tileCenterX - (box.x + box.width / 2);
+		player.y = tileCenterY - (box.y + box.height / 2);
+		player.prevX = player.x;
+		player.prevY = player.y;
+		player.jump = null;
+		player.jumpOffsetY = 0;
+		player.prevJumpOffsetY = 0;
+		player.walking = false;
+		player.animTimeMs = 0;
+		resolveCharacterCollision(player, game.world.grid, game.world.holes);
 	};
 
 	const onWheel = (e: WheelEvent<HTMLCanvasElement>) => {
