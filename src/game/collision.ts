@@ -1,3 +1,4 @@
+import type {TileFlip} from "@/tiled/gid";
 import type {TiledMap} from "@/tiled/loadMap";
 import {
 	collectTileIdsWithBoolProperty,
@@ -71,31 +72,39 @@ export function buildHoleGrid(map: TiledMap): HoleGrid {
 
 // cliffs are walkable on most of the tile surface; only a sub-rectangle (the
 // fall edge, defined per-tile via tiled's collision editor) triggers a hop.
-// the grid is just a flat list of those sub-rectangles in world coordinates,
-// kept alongside map dimensions for parity with the other grid types.
+// each region carries the direction the body should hop in, derived from the
+// sub-rect's position within its tile after applying the cell's flip flags so
+// rotated cliff tiles drop the player off their painted edge rather than
+// always southward.
+export type CliffDirection = "up" | "down" | "left" | "right";
+
+export type CliffRegion = Aabb & {readonly direction: CliffDirection};
+
 export type CliffGrid = {
 	readonly width: number;
 	readonly height: number;
 	readonly tileWidth: number;
 	readonly tileHeight: number;
-	readonly regions: ReadonlyArray<Aabb>;
+	readonly regions: ReadonlyArray<CliffRegion>;
 };
 
 export function buildCliffGrid(map: TiledMap): CliffGrid {
 	const tiles = collectTilesWithBoolProperty(map, CLIFF_PROPERTY);
-	const regions: Aabb[] = [];
-	forEachTaggedCellWithGid(map, new Set(tiles.keys()), (col, row, id) => {
+	const regions: CliffRegion[] = [];
+	forEachTaggedCellWithGid(map, new Set(tiles.keys()), (col, row, id, flip) => {
 		const tile = tiles.get(id);
 		const objects = tile?.objectgroup?.objects;
 		if (!objects) return;
 		for (const obj of objects) {
 			const rect = objectAabb(obj);
 			if (!rect) continue;
+			const oriented = applyTileFlipToRect(rect, flip, map.tilewidth, map.tileheight);
 			regions.push({
-				x: col * map.tilewidth + rect.x,
-				y: row * map.tileheight + rect.y,
-				width: rect.width,
-				height: rect.height,
+				x: col * map.tilewidth + oriented.x,
+				y: row * map.tileheight + oriented.y,
+				width: oriented.width,
+				height: oriented.height,
+				direction: cliffDirectionFromRect(oriented, map.tilewidth, map.tileheight),
 			});
 		}
 	});
@@ -106,6 +115,36 @@ export function buildCliffGrid(map: TiledMap): CliffGrid {
 		tileHeight: map.tileheight,
 		regions,
 	};
+}
+
+// transforms a tile-local rect through tiled's flip flags. order matches the
+// renderer (drawTile): diagonal first (transpose), then horizontal/vertical
+// mirrors. assumes square tiles for the diagonal swap — the only sensible
+// case for rotated cells.
+function applyTileFlipToRect(
+	rect: Aabb,
+	flip: TileFlip,
+	tileWidth: number,
+	tileHeight: number
+): Aabb {
+	let {x, y, width, height} = rect;
+	if (flip.diagonal) {
+		[x, y] = [y, x];
+		[width, height] = [height, width];
+	}
+	if (flip.horizontal) x = tileWidth - x - width;
+	if (flip.vertical) y = tileHeight - y - height;
+	return {x, y, width, height};
+}
+
+// the fall direction is the axis along which the rect's center sits furthest
+// from the tile center: a bottom-half rect hops south, a right-half rect east,
+// etc. ties fall back to south to match the historical default.
+function cliffDirectionFromRect(rect: Aabb, tileWidth: number, tileHeight: number): CliffDirection {
+	const dx = rect.x + rect.width / 2 - tileWidth / 2;
+	const dy = rect.y + rect.height / 2 - tileHeight / 2;
+	if (Math.abs(dy) >= Math.abs(dx)) return dy < 0 ? "up" : "down";
+	return dx < 0 ? "left" : "right";
 }
 
 function aabbsOverlap(a: Aabb, b: Aabb): boolean {
@@ -119,27 +158,39 @@ export function aabbOverlapsCliff(box: Aabb, cliffs: CliffGrid): boolean {
 	return false;
 }
 
-// scans rows below `box` for the first one where the footprint stands clear
-// of solid, hole, and cliff. solid rows between the cliff edge and the
-// landing (the cliff face itself) are skipped — the body arcs over them. y
-// snaps to the row top so the body rests flush against the tile, mirroring
-// landingPosition's hole-jump snapping. returns null only when no clear row
+// returns the first cliff region the box overlaps, or null. callers use the
+// region's direction to decide which way to launch a cliff hop.
+export function findOverlappingCliff(box: Aabb, cliffs: CliffGrid): CliffRegion | null {
+	for (const region of cliffs.regions) if (aabbsOverlap(box, region)) return region;
+	return null;
+}
+
+// scans tiles in `direction` from `box` for the first one where the footprint
+// stands clear of solid, hole, and cliff. tiles between the cliff edge and the
+// landing (the cliff face itself) are skipped — the body arcs over them. the
+// landing snaps to the tile edge nearest the start so the hop reads as minimal
+// rather than a teleport across the tile. returns null only when no clear tile
 // exists before the map ends.
 export function findCliffLanding(
 	grid: SolidGrid,
 	holes: HoleGrid | undefined,
 	cliffs: CliffGrid,
-	box: Aabb
+	box: Aabb,
+	direction: CliffDirection
 ): Aabb | null {
-	const tileHeight = grid.tileHeight;
-	const startRow = Math.floor((box.y + box.height - 1e-6) / tileHeight) + 1;
-	for (let row = startRow; row < grid.height; row++) {
-		const candidate: Aabb = {
-			x: box.x,
-			y: row * tileHeight,
-			width: box.width,
-			height: box.height,
-		};
+	const horizontal = direction === "left" || direction === "right";
+	const positive = direction === "down" || direction === "right";
+	const tileSize = horizontal ? grid.tileWidth : grid.tileHeight;
+	const extent = horizontal ? box.width : box.height;
+	const start = horizontal ? box.x : box.y;
+	const startTile = positive
+		? Math.floor((start + extent - 1e-6) / tileSize) + 1
+		: Math.floor(start / tileSize) - 1;
+	const limit = horizontal ? grid.width : grid.height;
+	const step = positive ? 1 : -1;
+	for (let t = startTile; t >= 0 && t < limit; t += step) {
+		const coord = positive ? t * tileSize : (t + 1) * tileSize - extent;
+		const candidate: Aabb = horizontal ? {...box, x: coord} : {...box, y: coord};
 		if (!isAabbFree(grid, candidate)) continue;
 		if (aabbOverlapsCliff(candidate, cliffs)) continue;
 		if (holes && aabbOverlapsHole(holes, candidate)) continue;

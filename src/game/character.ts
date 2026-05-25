@@ -3,6 +3,7 @@ import {
 	aabbOverlapsCliff,
 	findCliffLanding,
 	findNearestFreeAabb,
+	findOverlappingCliff,
 	moveAabb,
 	unionGrids,
 	type Aabb,
@@ -165,10 +166,11 @@ export function stepCharacter(
 }
 
 // edge-triggered cliff drop: a footprint that wasn't overlapping any cliff
-// region last frame and now is gets launched downward to the first row that's
-// clear of solid, hole, and cliff. preserves this frame's horizontal motion
-// so diagonal approaches still read as diagonal hops. no-ops when the fall
-// path is walled in so designers get a hard stop rather than a stuck body.
+// region last frame and now is gets launched along the region's painted
+// direction to the first tile that's clear of solid, hole, and cliff.
+// preserves this frame's perpendicular motion so diagonal approaches still
+// read as diagonal hops. no-ops when the fall path is walled in so designers
+// get a hard stop rather than a stuck body.
 function tryCliffJump(
 	char: BasicCharacter,
 	before: Aabb,
@@ -178,11 +180,13 @@ function tryCliffJump(
 	cliffs: CliffGrid
 ): boolean {
 	if (aabbOverlapsCliff(before, cliffs)) return false;
-	if (!aabbOverlapsCliff(after, cliffs)) return false;
-	const landing = findCliffLanding(grid, holes, cliffs, after);
+	const region = findOverlappingCliff(after, cliffs);
+	if (!region) return false;
+	const landing = findCliffLanding(grid, holes, cliffs, after, region.direction);
 	if (!landing) return false;
-	const endX = char.x + (after.x - before.x);
-	const endY = char.y + (landing.y - before.y);
+	const horizontal = region.direction === "left" || region.direction === "right";
+	const endX = char.x + ((horizontal ? landing.x : after.x) - before.x);
+	const endY = char.y + ((horizontal ? after.y : landing.y) - before.y);
 	startJump(char, endX, endY);
 	return true;
 }

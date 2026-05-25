@@ -3,7 +3,7 @@ import type {
 	ITiledMapObjectLayer,
 	ITiledMapTile,
 } from "@workadventure/tiled-map-type-guard";
-import {decodeTileGid, EMPTY_TILE_ID} from "./gid";
+import {decodeTileGid, EMPTY_TILE_ID, type TileFlip} from "./gid";
 import type {TiledMap} from "./loadMap";
 
 export type TiledProperty = NonNullable<ITiledMapObject["properties"]>[number];
@@ -77,21 +77,22 @@ export function forEachTaggedCell(
 	forEachTaggedCellWithGid(map, ids, (col, row) => visit(col, row));
 }
 
-// like forEachTaggedCell but also passes the decoded tile id so visitors can
-// look up per-tile metadata for the matched cell.
+// like forEachTaggedCell but also passes the decoded tile id and flip flags so
+// visitors can look up per-tile metadata and re-orient it to match how the
+// cell is actually drawn.
 export function forEachTaggedCellWithGid(
 	map: TiledMap,
 	ids: ReadonlySet<number>,
-	visit: (col: number, row: number, id: number) => void
+	visit: (col: number, row: number, id: number, flip: TileFlip) => void
 ): void {
 	if (ids.size === 0) return;
 	for (const layer of iterateTileLayers(map)) {
 		for (let i = 0; i < layer.data.length; i++) {
 			const gid = layer.data[i];
 			if (gid === EMPTY_TILE_ID) continue;
-			const {id} = decodeTileGid(gid);
+			const {id, flip} = decodeTileGid(gid);
 			if (!ids.has(id)) continue;
-			visit(i % layer.width, Math.floor(i / layer.width), id);
+			visit(i % layer.width, Math.floor(i / layer.width), id, flip);
 		}
 	}
 }
