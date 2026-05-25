@@ -20,6 +20,12 @@ const indexRoute = createRoute({
 	component: MapPage,
 });
 
+const testMapRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/test",
+	component: () => <MapPage mapUrl="/maps/test.json" />,
+});
+
 const avatarRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/avatar",
@@ -32,7 +38,7 @@ const animRoute = createRoute({
 	component: AnimPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, avatarRoute, animRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, testMapRoute, avatarRoute, animRoute]);
 
 const router = createRouter({routeTree});
 

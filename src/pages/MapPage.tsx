@@ -24,7 +24,7 @@ import {renderTiledMap} from "@/tiled/renderer";
 import {loadTilesets} from "@/tiled/tileset";
 import {useEffect, useRef, useState, type PointerEvent, type WheelEvent} from "react";
 
-const MAP_URL = "/maps/overworld.json";
+const DEFAULT_MAP_URL = "/maps/overworld.json";
 const INITIAL_SCALE = 2;
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 16;
@@ -151,7 +151,11 @@ type Camera = {
 	targetOffsetY: number;
 };
 
-function MapPage() {
+type MapPageProps = {
+	mapUrl?: string;
+};
+
+function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 	const debugRef = useRef(false);
 	const cameraRef = useRef<Camera>({
@@ -207,8 +211,8 @@ function MapPage() {
 		let frameHandle = 0;
 		(async () => {
 			try {
-				const map = await loadTiledMap(MAP_URL);
-				const tilesets = await loadTilesets(map, MAP_URL);
+				const map = await loadTiledMap(mapUrl);
+				const tilesets = await loadTilesets(map, mapUrl);
 				if (cancelled) return;
 				const canvas = canvasRef.current;
 				const ctx = canvas?.getContext("2d") ?? null;
@@ -389,7 +393,7 @@ function MapPage() {
 			gameRef.current?.world.dispose();
 			gameRef.current = null;
 		};
-	}, []);
+	}, [mapUrl]);
 
 	const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
 		const cam = cameraRef.current;
