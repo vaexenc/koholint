@@ -5,6 +5,7 @@ import {
 	buildCliffGrid,
 	buildHoleGrid,
 	buildSolidGrid,
+	buildTeleporterGrid,
 	buildTerrainGrid,
 	CharacterRenderer,
 	createBasicCharacter,
@@ -235,10 +236,12 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 					const terrainGrid = buildTerrainGrid(map);
 					const holeGrid = buildHoleGrid(map);
 					const cliffGrid = buildCliffGrid(map);
+					const teleporters = buildTeleporterGrid(map);
 					const world = new World(solidGrid, {
 						terrain: terrainGrid,
 						holes: holeGrid,
 						cliffs: cliffGrid,
+						teleporters,
 					});
 					const clock = new GameClock(tickRateRef.current);
 					const renderer = new CharacterRenderer();
@@ -465,6 +468,7 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		player.prevX = player.x;
 		player.prevY = player.y;
 		player.jump = null;
+		player.teleport = null;
 		player.jumpOffsetY = 0;
 		player.prevJumpOffsetY = 0;
 		player.walking = false;

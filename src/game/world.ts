@@ -1,6 +1,7 @@
 import {resolveCharacterCollision, stepCharacter, type BasicCharacter} from "./character";
 import type {CliffGrid, HoleGrid, SolidGrid} from "./collision";
 import type {InputProvider} from "./controllers";
+import type {TeleporterGrid} from "./teleport";
 import type {TerrainGrid} from "./terrain";
 import {NEUTRAL_INPUT, type CharacterInput, type EntityId} from "./types";
 
@@ -8,6 +9,7 @@ export type WorldOptions = {
 	readonly terrain?: TerrainGrid;
 	readonly holes?: HoleGrid;
 	readonly cliffs?: CliffGrid;
+	readonly teleporters?: TeleporterGrid;
 };
 
 // the authoritative simulation. step() samples each entity's input provider
@@ -21,6 +23,7 @@ export class World {
 	readonly terrain?: TerrainGrid;
 	readonly holes?: HoleGrid;
 	readonly cliffs?: CliffGrid;
+	readonly teleporters?: TeleporterGrid;
 	private inputProviders = new Map<EntityId, InputProvider>();
 
 	constructor(grid: SolidGrid, options: WorldOptions = {}) {
@@ -28,6 +31,7 @@ export class World {
 		this.terrain = options.terrain;
 		this.holes = options.holes;
 		this.cliffs = options.cliffs;
+		this.teleporters = options.teleporters;
 	}
 
 	addCharacter(character: BasicCharacter, inputProvider: InputProvider): void {
@@ -62,7 +66,16 @@ export class World {
 	applyInputs(inputs: ReadonlyMap<EntityId, CharacterInput>, dtSec: number): void {
 		for (const [id, char] of this.characters) {
 			const input = inputs.get(id) ?? NEUTRAL_INPUT;
-			stepCharacter(char, input, dtSec, this.grid, this.terrain, this.holes, this.cliffs);
+			stepCharacter(
+				char,
+				input,
+				dtSec,
+				this.grid,
+				this.terrain,
+				this.holes,
+				this.cliffs,
+				this.teleporters
+			);
 		}
 	}
 }

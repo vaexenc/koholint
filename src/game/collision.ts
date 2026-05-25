@@ -147,7 +147,7 @@ function cliffDirectionFromRect(rect: Aabb, tileWidth: number, tileHeight: numbe
 	return dx < 0 ? "left" : "right";
 }
 
-function aabbsOverlap(a: Aabb, b: Aabb): boolean {
+export function aabbsOverlap(a: Aabb, b: Aabb): boolean {
 	return (
 		a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 	);

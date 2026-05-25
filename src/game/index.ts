@@ -3,6 +3,7 @@ export * from "./clock";
 export * from "./collision";
 export * from "./controllers";
 export * from "./render";
+export * from "./teleport";
 export * from "./terrain";
 export * from "./types";
 export * from "./world";

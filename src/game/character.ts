@@ -11,6 +11,7 @@ import {
 	type HoleGrid,
 	type SolidGrid,
 } from "./collision";
+import {findOverlappingTeleporter, type Teleporter, type TeleporterGrid} from "./teleport";
 import {getTerrainSpeedMultiplier, type TerrainGrid} from "./terrain";
 import {inputHasMovement, type CharacterInput, type Direction, type EntityId} from "./types";
 
@@ -28,12 +29,34 @@ export const DEFAULT_CORNER_SLIDE_PX = 7;
 export const JUMP_DURATION_MS = 500;
 export const JUMP_PEAK_HEIGHT_PX = 16;
 
+// rise-style teleport tuning. higher peak than a jump so the sprite reads as
+// leaving the playfield rather than hopping in place.
+export const TELEPORT_RISE_MS = 400;
+export const TELEPORT_FALL_MS = TELEPORT_RISE_MS;
+export const TELEPORT_PEAK_OFFSET_PX = 180;
+// instant teleports have no animation but still pause input briefly so the
+// player registers the jump-cut and doesn't immediately walk back through.
+export const TELEPORT_INSTANT_LOCK_MS = 200;
+
 export type CharacterJump = {
 	readonly startX: number;
 	readonly startY: number;
 	readonly endX: number;
 	readonly endY: number;
 	readonly durationMs: number;
+	elapsedMs: number;
+};
+
+// two-phase animation: the body stays at the source while rising, snaps to the
+// destination at the peak, then falls in place. inputs are ignored for the
+// whole duration so the player can't cancel mid-warp.
+export type CharacterTeleport = {
+	readonly destX: number;
+	readonly destY: number;
+	readonly riseDurationMs: number;
+	readonly fallDurationMs: number;
+	readonly peakOffsetY: number;
+	phase: "rise" | "fall";
 	elapsedMs: number;
 };
 
@@ -62,6 +85,10 @@ export type BasicCharacter = {
 	// non-null while the character is mid-hop; inputs are ignored and ground
 	// position interpolates linearly from start to end of the strip.
 	jump: CharacterJump | null;
+	// non-null while the character is mid-warp. shares jumpOffsetY with the
+	// renderer so the rise/fall reads through the same vertical lift channel
+	// as a hop. inputs are ignored for the whole sequence.
+	teleport: CharacterTeleport | null;
 	// arc height above the logical ground, lerped by the renderer using the
 	// same prev/current pairing as x/y.
 	jumpOffsetY: number;
@@ -99,6 +126,7 @@ export function createBasicCharacter(opts: BasicCharacterOptions): BasicCharacte
 		walking: false,
 		animTimeMs: 0,
 		jump: null,
+		teleport: null,
 		jumpOffsetY: 0,
 		prevJumpOffsetY: 0,
 	};
@@ -117,11 +145,16 @@ export function stepCharacter(
 	grid: SolidGrid,
 	terrain?: TerrainGrid,
 	holes?: HoleGrid,
-	cliffs?: CliffGrid
+	cliffs?: CliffGrid,
+	teleporters?: TeleporterGrid
 ): void {
 	char.prevX = char.x;
 	char.prevY = char.y;
 	char.prevJumpOffsetY = char.jumpOffsetY;
+	if (char.teleport) {
+		advanceTeleport(char, dtSec);
+		return;
+	}
 	if (char.jump) {
 		advanceJump(char, dtSec);
 		return;
@@ -159,6 +192,7 @@ export function stepCharacter(
 		char.y = endY;
 		char.walking = true;
 		char.animTimeMs += dtSec * 1000;
+		if (teleporters) tryEnterTeleporter(char, before, teleporters);
 	} else {
 		char.walking = false;
 		char.animTimeMs = 0;
@@ -222,6 +256,105 @@ function advanceJump(char: BasicCharacter, dtSec: number): void {
 // symmetric parabolic arc peaking at t = 0.5 with zero endpoints.
 function jumpArcHeight(t: number): number {
 	return 4 * t * (1 - t) * JUMP_PEAK_HEIGHT_PX;
+}
+
+// edge-triggered warp: a footprint that wasn't overlapping any teleporter last
+// frame and now is gets sent to its target's center. the edge condition is
+// what keeps two mutually-linked teleporters from ping-ponging — the body
+// arrives already overlapping the destination, so the next tick's before-check
+// skips the retrigger until the player walks off and back on.
+function tryEnterTeleporter(
+	char: BasicCharacter,
+	before: Aabb,
+	teleporters: TeleporterGrid
+): boolean {
+	if (findOverlappingTeleporter(before, teleporters)) return false;
+	const source = findOverlappingTeleporter(characterAabb(char), teleporters);
+	if (!source) return false;
+	const target = teleporters.byId.get(source.targetId);
+	if (!target) return false;
+	const dest = teleportDestination(char, target, source);
+	startTeleport(char, dest, source.type);
+	return true;
+}
+
+function teleportDestination(
+	char: BasicCharacter,
+	target: Teleporter,
+	source: Teleporter
+): {readonly x: number; readonly y: number} {
+	const box = char.collisionBox;
+	const centerX = target.box.x + target.box.width / 2;
+	const centerY = target.box.y + target.box.height / 2;
+	return {
+		x: centerX - (box.x + box.width / 2) + source.destOffsetX,
+		y: centerY - (box.y + box.height / 2) + source.destOffsetY,
+	};
+}
+
+function startTeleport(
+	char: BasicCharacter,
+	dest: {readonly x: number; readonly y: number},
+	type: Teleporter["type"]
+): void {
+	char.walking = false;
+	char.animTimeMs = 0;
+	if (type === "instant") {
+		char.x = dest.x;
+		char.y = dest.y;
+		char.prevX = char.x;
+		char.prevY = char.y;
+		char.facing = "down";
+		// reuse the fall phase with a zero-height arc as a pure input lockout:
+		// jumpOffsetY stays at 0, the timer just gates inputs for a moment.
+		char.teleport = {
+			destX: dest.x,
+			destY: dest.y,
+			riseDurationMs: 0,
+			fallDurationMs: TELEPORT_INSTANT_LOCK_MS,
+			peakOffsetY: 0,
+			phase: "fall",
+			elapsedMs: 0,
+		};
+		return;
+	}
+	char.teleport = {
+		destX: dest.x,
+		destY: dest.y,
+		riseDurationMs: TELEPORT_RISE_MS,
+		fallDurationMs: TELEPORT_FALL_MS,
+		peakOffsetY: TELEPORT_PEAK_OFFSET_PX,
+		phase: "rise",
+		elapsedMs: 0,
+	};
+}
+
+// rise lifts the sprite while the body stays at the source; the peak snaps
+// position to the destination (with prev = current to suppress the renderer's
+// inter-tick lerp); fall drops the sprite back to the ground at the dest.
+function advanceTeleport(char: BasicCharacter, dtSec: number): void {
+	const tp = char.teleport!;
+	tp.elapsedMs += dtSec * 1000;
+	if (tp.phase === "rise") {
+		const t = Math.min(1, tp.elapsedMs / tp.riseDurationMs);
+		char.jumpOffsetY = tp.peakOffsetY * t;
+		if (t < 1) return;
+		char.x = tp.destX;
+		char.y = tp.destY;
+		char.prevX = char.x;
+		char.prevY = char.y;
+		char.jumpOffsetY = tp.peakOffsetY;
+		char.prevJumpOffsetY = tp.peakOffsetY;
+		tp.phase = "fall";
+		tp.elapsedMs = 0;
+		return;
+	}
+	const t = Math.min(1, tp.elapsedMs / tp.fallDurationMs);
+	char.jumpOffsetY = tp.peakOffsetY * (1 - t);
+	if (t >= 1) {
+		char.jumpOffsetY = 0;
+		char.teleport = null;
+	}
 }
 
 export function characterAabb(char: BasicCharacter): Aabb {
