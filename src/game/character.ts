@@ -36,7 +36,7 @@ export const TELEPORT_FALL_MS = TELEPORT_RISE_MS;
 export const TELEPORT_PEAK_OFFSET_PX = 180;
 // instant teleports have no animation but still pause input briefly so the
 // player registers the jump-cut and doesn't immediately walk back through.
-export const TELEPORT_INSTANT_LOCK_MS = 200;
+export const TELEPORT_INSTANT_LOCK_MS = 600;
 
 export type CharacterJump = {
 	readonly startX: number;

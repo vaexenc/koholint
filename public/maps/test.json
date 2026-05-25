@@ -118,7 +118,7 @@
                                 {
                                  "name":"teleportToOffsetY",
                                  "type":"int",
-                                 "value":8
+                                 "value":12
                                 }],
                          "rotation":0,
                          "type":"",
@@ -140,7 +140,7 @@
                                 {
                                  "name":"teleportToOffsetY",
                                  "type":"int",
-                                 "value":8
+                                 "value":12
                                 }],
                          "rotation":0,
                          "type":"",
@@ -162,8 +162,8 @@
          "x":0,
          "y":0
         }],
- "nextlayerid":5,
- "nextobjectid":8,
+ "nextlayerid":6,
+ "nextobjectid":10,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.10.2",
