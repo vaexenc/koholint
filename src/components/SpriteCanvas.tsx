@@ -56,10 +56,7 @@ export function SpriteCanvas({
 		[sprite.palette, paletteSwap]
 	);
 	const recolored = useMemo(
-		() =>
-			image && colorMap && Object.keys(colorMap).length > 0
-				? recolorImage(image, colorMap)
-				: null,
+		() => (image && colorMap && colorMap.size > 0 ? recolorImage(image, colorMap) : null),
 		[image, colorMap]
 	);
 	const source: CanvasImageSource | null = recolored ?? image;

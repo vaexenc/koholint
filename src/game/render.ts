@@ -118,7 +118,7 @@ export class CharacterRenderer {
 			let source: CanvasImageSource = image;
 			if (char.sprite.palette && char.paletteSwap) {
 				const colorMap = buildColorMap(char.sprite.palette, char.paletteSwap);
-				if (Object.keys(colorMap).length > 0) source = recolorImage(image, colorMap);
+				if (colorMap.size > 0) source = recolorImage(image, colorMap);
 			}
 			this.images.set(char.id, {source});
 		} finally {
@@ -128,8 +128,8 @@ export class CharacterRenderer {
 }
 
 function pickAnimationName(char: BasicCharacter): ClassicCharacterAnimationName {
-	const prefix = char.walking ? "walk" : "stand";
-	return `${prefix}_${char.facing}` as ClassicCharacterAnimationName;
+	const prefix: "walk" | "stand" = char.walking ? "walk" : "stand";
+	return `${prefix}_${char.facing}`;
 }
 
 function swimBobOffset(timeMs: number): number {

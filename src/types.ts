@@ -23,4 +23,4 @@ export type SpriteAsset = {
 	palette?: SpritePalette;
 };
 
-export type SpriteSheetColorMap = Record<HexColor, HexColor>;
+export type SpriteSheetColorMap = Map<HexColor, HexColor>;

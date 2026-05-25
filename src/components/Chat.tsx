@@ -31,8 +31,11 @@ export type ChatMessage =
 	  }
 	| {id: string; kind: "system"; text: string; timestamp: number};
 
-export type TimestampMode = "off" | "24h" | "12h";
-export type AvatarMode = "off" | "on";
+const TIMESTAMP_MODES = ["off", "24h", "12h"] as const;
+const AVATAR_MODES = ["off", "on"] as const;
+
+export type TimestampMode = (typeof TIMESTAMP_MODES)[number];
+export type AvatarMode = (typeof AVATAR_MODES)[number];
 
 export type ChatSettings = {
 	timestampMode: TimestampMode;
@@ -43,6 +46,14 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {timestampMode: "24h", avatar
 
 const PIN_THRESHOLD = 8;
 const AVATAR_SRC = "/images/sprites/windfish.png";
+
+function isTimestampMode(v: string): v is TimestampMode {
+	return TIMESTAMP_MODES.some((m) => m === v);
+}
+
+function isAvatarMode(v: string): v is AvatarMode {
+	return AVATAR_MODES.some((m) => m === v);
+}
 
 function fmtTime(ts: number, mode: TimestampMode) {
 	if (mode === "off") return "";
@@ -218,12 +229,14 @@ function Chat({
 										spacing={0}
 										variant="outline"
 										onValueChange={(v) =>
-											v && updateSettings({timestampMode: v as TimestampMode})
+											isTimestampMode(v) && updateSettings({timestampMode: v})
 										}
 									>
-										<ToggleGroupItem value="off">off</ToggleGroupItem>
-										<ToggleGroupItem value="24h">24h</ToggleGroupItem>
-										<ToggleGroupItem value="12h">12h</ToggleGroupItem>
+										{TIMESTAMP_MODES.map((m) => (
+											<ToggleGroupItem key={m} value={m}>
+												{m}
+											</ToggleGroupItem>
+										))}
 									</ToggleGroup>
 									<span className="text-muted-foreground">avatars</span>
 									<ToggleGroup
@@ -233,11 +246,14 @@ function Chat({
 										spacing={0}
 										variant="outline"
 										onValueChange={(v) =>
-											v && updateSettings({avatarMode: v as AvatarMode})
+											isAvatarMode(v) && updateSettings({avatarMode: v})
 										}
 									>
-										<ToggleGroupItem value="off">off</ToggleGroupItem>
-										<ToggleGroupItem value="on">on</ToggleGroupItem>
+										{AVATAR_MODES.map((m) => (
+											<ToggleGroupItem key={m} value={m}>
+												{m}
+											</ToggleGroupItem>
+										))}
 									</ToggleGroup>
 								</div>
 							</PopoverContent>

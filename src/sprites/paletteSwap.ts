@@ -9,13 +9,13 @@ function hexToRgb(hex: HexColor): [number, number, number] {
 }
 
 export function buildColorMap(source: SpritePalette, target: SpritePalette): SpriteSheetColorMap {
-	const map: SpriteSheetColorMap = {};
+	const map: SpriteSheetColorMap = new Map();
 	for (const key of PALETTE_KEYS) {
 		const src = source[key];
 		const dst = target[key];
 		if (!src || !dst) continue;
 		const n = Math.min(src.length, dst.length);
-		for (let i = 0; i < n; i++) map[src[i]] = dst[i];
+		for (let i = 0; i < n; i++) map.set(src[i], dst[i]);
 	}
 	return map;
 }
@@ -154,13 +154,13 @@ export function recolorImage(image: HTMLImageElement, map: SpriteSheetColorMap):
 	gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
 	gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
 	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-	const entries = Object.entries(map).slice(0, MAX_MAP_ENTRIES);
+	const entries = [...map].slice(0, MAX_MAP_ENTRIES);
 	const fromArr = new Float32Array(MAX_MAP_ENTRIES * 3);
 	const toArr = new Float32Array(MAX_MAP_ENTRIES * 3);
 	for (let i = 0; i < entries.length; i++) {
 		const [f, t] = entries[i];
-		const fr = hexToRgb(f as HexColor);
-		const tr = hexToRgb(t as HexColor);
+		const fr = hexToRgb(f);
+		const tr = hexToRgb(t);
 		fromArr.set([fr[0] / 255, fr[1] / 255, fr[2] / 255], i * 3);
 		toArr.set([tr[0] / 255, tr[1] / 255, tr[2] / 255], i * 3);
 	}

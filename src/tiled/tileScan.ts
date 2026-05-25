@@ -18,7 +18,7 @@ export function* iterateTileLayers(map: TiledMap): Generator<TileLayerView> {
 	while (stack.length > 0) {
 		const layer = stack.pop()!;
 		if (layer.type === "tilelayer" && Array.isArray(layer.data))
-			yield {data: layer.data as number[], width: layer.width};
+			yield {data: layer.data, width: layer.width};
 		else if (layer.type === "group") stack.push(...layer.layers);
 	}
 }
