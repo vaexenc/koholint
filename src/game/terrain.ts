@@ -70,3 +70,30 @@ export function isSwimTile(grid: TerrainGrid, box: Aabb): boolean {
 	const row = Math.floor((box.y + box.height / 2) / grid.tileHeight);
 	return (getCellFlags(grid, col, row) & TERRAIN_FLAG_SWIM) !== 0;
 }
+
+export function forEachSwimCell(
+	grid: TerrainGrid,
+	visit: (col: number, row: number) => void
+): void {
+	forEachFlaggedCell(grid, TERRAIN_FLAG_SWIM, visit);
+}
+
+export function forEachStairsCell(
+	grid: TerrainGrid,
+	visit: (col: number, row: number) => void
+): void {
+	forEachFlaggedCell(grid, TERRAIN_FLAG_STAIRS, visit);
+}
+
+function forEachFlaggedCell(
+	grid: TerrainGrid,
+	flag: number,
+	visit: (col: number, row: number) => void
+): void {
+	for (let row = 0; row < grid.height; row++) {
+		for (let col = 0; col < grid.width; col++) {
+			if ((grid.cells[row * grid.width + col] & flag) === 0) continue;
+			visit(col, row);
+		}
+	}
+}

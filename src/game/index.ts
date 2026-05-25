@@ -2,6 +2,7 @@ export * from "./character";
 export * from "./clock";
 export * from "./collision";
 export * from "./controllers";
+export * from "./debugOverlay";
 export * from "./render";
 export * from "./teleport";
 export * from "./terrain";

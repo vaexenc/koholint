@@ -9,7 +9,10 @@ import {
 	buildTerrainGrid,
 	CharacterRenderer,
 	createBasicCharacter,
+	DEBUG_OVERLAY_ALL,
+	DEFAULT_DEBUG_OVERLAY,
 	DEFAULT_TICK_RATE_HZ,
+	drawDebugOverlay,
 	GameClock,
 	KeyboardInputProvider,
 	RandomInputProvider,
@@ -178,7 +181,7 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	const mouseRef = useRef<{x: number; y: number} | null>(null);
 	const displayedZoomRef = useRef(INITIAL_SCALE);
 	const displayedCursorRef = useRef<{x: number; y: number} | null>(null);
-	const followRef = useRef(true);
+	const followRef = useRef(false);
 	const gameRef = useRef<{
 		world: World;
 		clock: GameClock;
@@ -191,7 +194,7 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	const [zoom, setZoom] = useState(INITIAL_SCALE);
 	const [cursor, setCursor] = useState<{x: number; y: number} | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
-	const [follow, setFollow] = useState(true);
+	const [follow, setFollow] = useState(false);
 	const [tickRate, setTickRate] = useState(DEFAULT_TICK_RATE_HZ);
 
 	useEffect(() => {
@@ -332,14 +335,18 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 						offCtx.setTransform(1, 0, 0, 1, 0, 0);
 						offCtx.clearRect(0, 0, mapPixelWidth, mapPixelHeight);
 						const elapsedMs = now - startTime;
+						const overlay = debugRef.current
+							? DEBUG_OVERLAY_ALL
+							: DEFAULT_DEBUG_OVERLAY;
 						renderTiledMap(offCtx, {
 							map,
 							tilesets,
 							animations,
 							timeMs: elapsedMs,
-							debug: debugRef.current,
+							debugObjects: overlay.objects,
 						});
 						renderer.drawAll(offCtx, world, true, alpha);
+						drawDebugOverlay(offCtx, world, overlay);
 						ctx.setTransform(1, 0, 0, 1, 0, 0);
 						ctx.imageSmoothingEnabled = false;
 						ctx.clearRect(0, 0, canvas.width, canvas.height);

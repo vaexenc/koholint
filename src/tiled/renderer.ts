@@ -17,7 +17,7 @@ export type RenderContext = {
 	readonly tilesets: readonly LoadedTileset[];
 	readonly animations: AnimationTable;
 	readonly timeMs: number;
-	readonly debug: boolean;
+	readonly debugObjects: boolean;
 };
 
 export function renderTiledMap(ctx: CanvasRenderingContext2D, scene: RenderContext): void {
@@ -30,7 +30,14 @@ function drawLayer(ctx: CanvasRenderingContext2D, layer: TiledLayer, scene: Rend
 	if (isTileLayer(layer)) drawTileLayer(ctx, layer, scene);
 	else if (isGroupLayer(layer)) drawGroupLayer(ctx, layer, scene);
 	else if (isObjectLayer(layer))
-		drawObjectLayer(ctx, layer, scene.tilesets, scene.animations, scene.timeMs, scene.debug);
+		drawObjectLayer(
+			ctx,
+			layer,
+			scene.tilesets,
+			scene.animations,
+			scene.timeMs,
+			scene.debugObjects
+		);
 }
 
 function drawGroupLayer(
