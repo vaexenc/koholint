@@ -1,4 +1,5 @@
 import {ITiledMap} from "@workadventure/tiled-map-type-guard";
+import {expandExternalTilesets} from "./externalTileset";
 
 export type TiledMap = ITiledMap & {
 	width: number;
@@ -35,7 +36,8 @@ export async function loadTiledMap(url: string): Promise<TiledMap> {
 		);
 	}
 	const json: unknown = await response.json();
-	return parseTiledMap(json, url);
+	const expanded = await expandExternalTilesets(json, url);
+	return parseTiledMap(expanded, url);
 }
 
 function assertRenderableMap(map: ITiledMap, source?: string): TiledMap {
