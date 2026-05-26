@@ -1216,11 +1216,6 @@
    <object id="1" x="0" y="0" width="16" height="16"/>
   </objectgroup>
  </tile>
- <tile id="232">
-  <properties>
-   <property name="hole" type="bool" value="true"/>
-  </properties>
- </tile>
  <tile id="233">
   <properties>
    <property name="solid" type="bool" value="true"/>
@@ -1239,11 +1234,6 @@
  <tile id="236">
   <properties>
    <property name="solid" type="bool" value="true"/>
-  </properties>
- </tile>
- <tile id="238">
-  <properties>
-   <property name="hole" type="bool" value="true"/>
   </properties>
  </tile>
  <tile id="248">
@@ -1825,6 +1815,26 @@
    <frame tileid="383" duration="333"/>
   </animation>
  </tile>
+ <tile id="384">
+  <properties>
+   <property name="solid" type="bool" value="true"/>
+  </properties>
+ </tile>
+ <tile id="385">
+  <properties>
+   <property name="solid" type="bool" value="true"/>
+  </properties>
+ </tile>
+ <tile id="386">
+  <properties>
+   <property name="solid" type="bool" value="true"/>
+  </properties>
+ </tile>
+ <tile id="387">
+  <properties>
+   <property name="solid" type="bool" value="true"/>
+  </properties>
+ </tile>
  <tile id="400">
   <animation>
    <frame tileid="400" duration="333"/>
@@ -1859,6 +1869,14 @@
    <property name="solid" type="bool" value="true"/>
   </properties>
  </tile>
+ <tile id="408">
+  <animation>
+   <frame tileid="408" duration="60"/>
+   <frame tileid="409" duration="60"/>
+   <frame tileid="410" duration="60"/>
+   <frame tileid="411" duration="60"/>
+  </animation>
+ </tile>
  <tile id="424">
   <animation>
    <frame tileid="424" duration="333"/>
@@ -1891,6 +1909,16 @@
  <tile id="431">
   <properties>
    <property name="swim" type="bool" value="true"/>
+  </properties>
+ </tile>
+ <tile id="435">
+  <properties>
+   <property name="solid" type="bool" value="true"/>
+  </properties>
+ </tile>
+ <tile id="436">
+  <properties>
+   <property name="solid" type="bool" value="true"/>
   </properties>
  </tile>
  <tile id="448">
