@@ -19,6 +19,10 @@ const SWIM_CUT_FRACTION = 0.3;
 const SWIM_BOB_AMP_PX = 1.5;
 const SWIM_BOB_HZ = 0.7;
 const SWIM_CLIP_PAD_PX = 16;
+// sinks the sprite a few px below its ground-render position so a character
+// stepping from land to water visibly drops into the water instead of staying
+// at the same screen height. water line is unaffected.
+const SWIM_SINK_PX = 3;
 
 type CharacterImage = {
 	readonly source: CanvasImageSource;
@@ -88,8 +92,9 @@ export class CharacterRenderer {
 			// visible portion above the line grow and shrink naturally. skip
 			// the shadow since the character reads as floating, not standing.
 			const bob = swimBobOffset(performance.now());
-			const waterLineY = y + char.spriteHeight * (1 - SWIM_CUT_FRACTION);
-			const clipTop = y - SWIM_CLIP_PAD_PX - SWIM_BOB_AMP_PX;
+			const sunkY = y + SWIM_SINK_PX;
+			const waterLineY = sunkY + char.spriteHeight * (1 - SWIM_CUT_FRACTION);
+			const clipTop = sunkY - SWIM_CLIP_PAD_PX - SWIM_BOB_AMP_PX;
 			ctx.save();
 			// reset to identity before clipping. drawSpriteFrame/Shadow leave
 			// the prior character's (possibly mirrored) transform on the ctx,
@@ -104,7 +109,7 @@ export class CharacterRenderer {
 				waterLineY - clipTop
 			);
 			ctx.clip();
-			drawSpriteFrame(ctx, entry.source, frame, 1, x, y - bob);
+			drawSpriteFrame(ctx, entry.source, frame, 1, x, sunkY - bob);
 			ctx.restore();
 			return;
 		}
@@ -147,8 +152,8 @@ function renderY(char: BasicCharacter, alpha: number): number {
 
 function visualFeetY(char: BasicCharacter, alpha: number, swimming: boolean): number {
 	const y = renderY(char, alpha);
-	const footFraction = swimming ? 1 - SWIM_CUT_FRACTION : 1;
-	return y + char.spriteHeight * footFraction;
+	if (!swimming) return y + char.spriteHeight;
+	return y + SWIM_SINK_PX + char.spriteHeight * (1 - SWIM_CUT_FRACTION);
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
