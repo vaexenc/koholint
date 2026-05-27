@@ -1,5 +1,8 @@
+import {AvatarPickerDialog} from "@/components/avatar-picker/AvatarPickerDialog";
+import {AVATARS} from "@/components/avatar-picker/registry";
 import {type ChatMessage} from "@/components/Chat";
 import ChatPanel from "@/components/ChatPanel";
+import {Button} from "@/components/ui/button";
 
 import {
 	buildCliffGrid,
@@ -20,13 +23,22 @@ import {
 	World,
 	type BasicCharacter,
 } from "@/game";
-import {LinkSpriteAsset} from "@/sprites/assets/link";
 import {NayruSpriteAsset} from "@/sprites/assets/nayru";
+import {PALETTES} from "@/sprites/palettes";
 import {buildAnimationTable} from "@/tiled/animation";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
 import {renderTiledMap} from "@/tiled/renderer";
 import {loadTilesets} from "@/tiled/tileset";
 import {useEffect, useRef, useState, type PointerEvent, type WheelEvent} from "react";
+
+function resolveAvatarSprite(avatarId: string) {
+	return (AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0]).sprite;
+}
+
+function resolvePaletteSwap(paletteId: string | null) {
+	if (!paletteId) return undefined;
+	return PALETTES.find((p) => p.id === paletteId)?.palette;
+}
 
 const DEFAULT_MAP_URL = "/maps/overworld.json";
 const INITIAL_SCALE = 2;
@@ -196,6 +208,22 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	const [isDragging, setIsDragging] = useState(false);
 	const [follow, setFollow] = useState(false);
 	const [tickRate, setTickRate] = useState(DEFAULT_TICK_RATE_HZ);
+	const [avatarId, setAvatarId] = useState<string>(AVATARS[0].id);
+	const [paletteId, setPaletteId] = useState<string | null>(null);
+	const [pickerOpen, setPickerOpen] = useState(false);
+	// mirrored into refs so the map-load effect (deps: [mapUrl]) can read the
+	// current selection when first constructing the player without taking it
+	// as a dep and re-running the whole load on every change.
+	const avatarIdRef = useRef(avatarId);
+	const paletteIdRef = useRef(paletteId);
+
+	useEffect(() => {
+		avatarIdRef.current = avatarId;
+	}, [avatarId]);
+
+	useEffect(() => {
+		paletteIdRef.current = paletteId;
+	}, [paletteId]);
 
 	useEffect(() => {
 		debugRef.current = debug;
@@ -254,7 +282,8 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 					};
 					const player = createBasicCharacter({
 						id: PLAYER_CHARACTER_ID,
-						sprite: LinkSpriteAsset,
+						sprite: resolveAvatarSprite(avatarIdRef.current),
+						paletteSwap: resolvePaletteSwap(paletteIdRef.current),
 						x: playerStart.x,
 						y: playerStart.y,
 					});
@@ -405,6 +434,18 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		};
 	}, [mapUrl]);
 
+	// push the latest avatar/palette selection onto the player and force the
+	// renderer to refetch its image. gated on state.status so the first apply
+	// happens after the map-load effect has populated gameRef.
+	useEffect(() => {
+		const game = gameRef.current;
+		if (!game || state.status !== "ok") return;
+		game.player.sprite = resolveAvatarSprite(avatarId);
+		game.player.paletteSwap = resolvePaletteSwap(paletteId);
+		game.renderer.invalidate(game.player.id);
+		game.renderer.ensureLoaded([game.player]).catch(() => {});
+	}, [avatarId, paletteId, state.status]);
+
 	const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
 		const cam = cameraRef.current;
 		// commit any in-flight spring animation to the current pose, so the
@@ -553,6 +594,21 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 						/>
 						<span className="tabular-nums">{tickRate} Hz</span>
 					</label>
+					<AvatarPickerDialog
+						open={pickerOpen}
+						onOpenChange={setPickerOpen}
+						avatarId={avatarId}
+						paletteId={paletteId}
+						onChange={(a, p) => {
+							setAvatarId(a);
+							setPaletteId(p);
+						}}
+						trigger={
+							<Button size="sm" variant="secondary">
+								Pick avatar
+							</Button>
+						}
+					/>
 				</div>
 				<div className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 tabular-nums">
 					<span className="text-neutral-400">zoom</span>

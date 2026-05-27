@@ -1,5 +1,4 @@
 import {SpriteCanvas} from "@/components/SpriteCanvas";
-import {Button} from "@/components/ui/button";
 import {
 	Dialog,
 	DialogContent,
@@ -12,7 +11,7 @@ import {
 	type ClassicCharacterAnimationName,
 } from "@/sprites/animations";
 import {PALETTES, type NamedPalette} from "@/sprites/palettes";
-import {useEffect, useState} from "react";
+import {useEffect, useState, type ReactNode} from "react";
 import {AVATARS, type Avatar} from "./registry";
 
 const PREVIEW_POSE_INTERVAL_MS = 1000;
@@ -115,20 +114,31 @@ function PaletteOffSwatch({selected, onSelect}: PaletteOffSwatchProps) {
 	);
 }
 
-export function AvatarPickerDialog() {
-	const [open, setOpen] = useState(true);
-	const [selectedId, setSelectedId] = useState<string>(AVATARS[0].id);
-	const [paletteId, setPaletteId] = useState<string | null>(null);
-	const selected = AVATARS.find((a) => a.id === selectedId) ?? AVATARS[0];
+type AvatarPickerDialogProps = {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	avatarId: string;
+	paletteId: string | null;
+	onChange: (avatarId: string, paletteId: string | null) => void;
+	trigger?: ReactNode;
+};
+
+export function AvatarPickerDialog({
+	open,
+	onOpenChange,
+	avatarId,
+	paletteId,
+	onChange,
+	trigger,
+}: AvatarPickerDialogProps) {
+	const selected = AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0];
 	const selectedPalette = paletteId ? PALETTES.find((p) => p.id === paletteId) : undefined;
 	const paletteSwap = selectedPalette?.palette;
 	// gated on `open` so we don't churn rAF/intervals in the background.
 	const previewAnimation = useCycle(PREVIEW_ANIMATION_CYCLE, PREVIEW_POSE_INTERVAL_MS, open);
 	return (
-		<Dialog open={open} onOpenChange={setOpen}>
-			<DialogTrigger asChild>
-				<Button>Pick avatar</Button>
-			</DialogTrigger>
+		<Dialog open={open} onOpenChange={onOpenChange}>
+			{trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
 			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader>
 					<DialogTitle>Select an avatar</DialogTitle>
@@ -141,7 +151,7 @@ export function AvatarPickerDialog() {
 								avatar={avatar}
 								selected={avatar.id === selected.id}
 								paletteSwap={paletteSwap}
-								onSelect={setSelectedId}
+								onSelect={(id) => onChange(id, paletteId)}
 							/>
 						))}
 					</ul>
@@ -156,14 +166,14 @@ export function AvatarPickerDialog() {
 						<div className="flex flex-wrap justify-center gap-2">
 							<PaletteOffSwatch
 								selected={paletteId === null}
-								onSelect={() => setPaletteId(null)}
+								onSelect={() => onChange(avatarId, null)}
 							/>
 							{PALETTES.map((p) => (
 								<PaletteSwatch
 									key={p.id}
 									palette={p}
 									selected={p.id === paletteId}
-									onSelect={setPaletteId}
+									onSelect={(id) => onChange(avatarId, id)}
 								/>
 							))}
 						</div>

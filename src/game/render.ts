@@ -34,16 +34,30 @@ type CharacterImage = {
 // don't render, which avoids a sync await in the render path.
 export class CharacterRenderer {
 	private images = new Map<EntityId, CharacterImage>();
-	private loading = new Set<EntityId>();
+	// per-id token for the in-flight load. invalidate() drops the entry so
+	// any older load that resolves later sees a missing/different token and
+	// discards its result, preventing a stale sprite from clobbering the
+	// freshly-requested one when appearance changes mid-flight.
+	private loading = new Map<EntityId, number>();
+	private nextToken = 0;
 
 	async ensureLoaded(characters: Iterable<BasicCharacter>): Promise<void> {
 		const pending: Promise<void>[] = [];
 		for (const char of characters) {
 			if (this.images.has(char.id) || this.loading.has(char.id)) continue;
-			this.loading.add(char.id);
-			pending.push(this.loadOne(char));
+			const token = ++this.nextToken;
+			this.loading.set(char.id, token);
+			pending.push(this.loadOne(char, token));
 		}
 		await Promise.all(pending);
+	}
+
+	// drop the cached image for `id` so the next ensureLoaded() reloads it
+	// against the character's current sprite/paletteSwap. used when callers
+	// mutate a character's appearance in place.
+	invalidate(id: EntityId): void {
+		this.images.delete(id);
+		this.loading.delete(id);
 	}
 
 	// alpha is the fraction of the way from the previous tick state to the
@@ -117,9 +131,13 @@ export class CharacterRenderer {
 		drawSpriteFrame(ctx, entry.source, frame, 1, x, y - jumpOffset);
 	}
 
-	private async loadOne(char: BasicCharacter): Promise<void> {
+	private async loadOne(char: BasicCharacter, token: number): Promise<void> {
 		try {
 			const image = await loadImage(char.sprite.imageUrl);
+			// invalidate() or a newer ensureLoaded() may have superseded us
+			// while loadImage was pending; drop the stale result so it can't
+			// overwrite a fresher sprite.
+			if (this.loading.get(char.id) !== token) return;
 			let source: CanvasImageSource = image;
 			if (char.sprite.palette && char.paletteSwap) {
 				const colorMap = buildColorMap(char.sprite.palette, char.paletteSwap);
@@ -127,7 +145,7 @@ export class CharacterRenderer {
 			}
 			this.images.set(char.id, {source});
 		} finally {
-			this.loading.delete(char.id);
+			if (this.loading.get(char.id) === token) this.loading.delete(char.id);
 		}
 	}
 }

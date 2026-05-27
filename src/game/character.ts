@@ -62,8 +62,11 @@ export type CharacterTeleport = {
 
 export type BasicCharacter = {
 	readonly id: EntityId;
-	readonly sprite: SpriteAsset;
-	readonly paletteSwap?: SpritePalette;
+	// sprite and paletteSwap are mutable so callers (e.g. the avatar picker)
+	// can change appearance at runtime without removing/re-adding the entity.
+	// pair any mutation with a renderer cache invalidation + ensureLoaded.
+	sprite: SpriteAsset;
+	paletteSwap?: SpritePalette;
 	// top-left of the sprite in map pixels. mutable so step() can move it.
 	x: number;
 	y: number;
