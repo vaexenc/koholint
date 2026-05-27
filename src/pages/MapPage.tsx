@@ -1,8 +1,9 @@
 import {AvatarPickerDialog} from "@/components/avatar-picker/AvatarPickerDialog";
 import {AVATARS} from "@/components/avatar-picker/registry";
-import {type ChatMessage} from "@/components/Chat";
+import {type ChatMessage, type ChatSettings} from "@/components/Chat";
 import ChatPanel from "@/components/ChatPanel";
 import {Button} from "@/components/ui/button";
+import {useLocalStorage} from "@/lib/useLocalStorage";
 
 import {
 	buildCliffGrid,
@@ -202,14 +203,30 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	} | null>(null);
 	const tickRateRef = useRef(DEFAULT_TICK_RATE_HZ);
 	const [state, setState] = useState<LoadState>({status: "loading"});
-	const [debug, setDebug] = useState(false);
 	const [zoom, setZoom] = useState(INITIAL_SCALE);
 	const [cursor, setCursor] = useState<{x: number; y: number} | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
-	const [follow, setFollow] = useState(false);
-	const [tickRate, setTickRate] = useState(DEFAULT_TICK_RATE_HZ);
-	const [avatarId, setAvatarId] = useState<string>(AVATARS[0].id);
-	const [paletteId, setPaletteId] = useState<string | null>(null);
+	const [debug, setDebug] = useLocalStorage("koholint:map.debug", false);
+	const [follow, setFollow] = useLocalStorage("koholint:map.follow", false);
+	const [tickRate, setTickRate] = useLocalStorage("koholint:map.tickRate", DEFAULT_TICK_RATE_HZ);
+	const [avatarId, setAvatarId] = useLocalStorage<string>(
+		"koholint:player.avatarId",
+		AVATARS[0].id
+	);
+	const [paletteId, setPaletteId] = useLocalStorage<string | null>(
+		"koholint:player.paletteId",
+		null
+	);
+	// undefined = "no user preference yet" so ChatPanel keeps its built-in
+	// defaults; once the user resizes or tweaks settings we persist the value.
+	const [chatWidth, setChatWidth] = useLocalStorage<number | undefined>(
+		"koholint:chat.width",
+		undefined
+	);
+	const [chatSettings, setChatSettings] = useLocalStorage<ChatSettings | undefined>(
+		"koholint:chat.settings",
+		undefined
+	);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	// mirrored into refs so the map-load effect (deps: [mapUrl]) can read the
 	// current selection when first constructing the player without taking it
@@ -559,7 +576,14 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 				onPointerCancel={onPointerUp}
 				onWheel={onWheel}
 			/>
-			<ChatPanel currentUser={CURRENT_USER} initialMessages={SEED_MESSAGES} />
+			<ChatPanel
+				currentUser={CURRENT_USER}
+				initialMessages={SEED_MESSAGES}
+				initialSettings={chatSettings}
+				initialWidth={chatWidth}
+				onSettingsChange={setChatSettings}
+				onWidthChange={setChatWidth}
+			/>
 			<div className="absolute top-2 left-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
 				{state.status === "loading" && <p>loading map…</p>}
 				{state.status === "error" && (
