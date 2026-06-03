@@ -1,3 +1,5 @@
+import {AVATARS} from "@/components/avatar-picker/registry";
+import {SpriteCanvas} from "@/components/SpriteCanvas";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
 import {Popover, PopoverContent, PopoverTrigger} from "@/components/ui/popover";
@@ -5,47 +7,36 @@ import {ScrollArea} from "@/components/ui/scroll-area";
 import {ToggleGroup, ToggleGroupItem} from "@/components/ui/toggle-group";
 import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/components/ui/tooltip";
 import {cn} from "@/lib/utils";
+import type {ChatMessage} from "@/protocol";
+import {PALETTES} from "@/sprites/palettes";
 import {ChevronDown, Send, Settings} from "lucide-react";
 import {useLayoutEffect, useRef, useState, type KeyboardEvent} from "react";
 
-export const CHAT_COLORS = [
-	"#FF0000",
-	"#FF7F50",
-	"#DAA520",
-	"#9ACD32",
-	"#00FF7F",
-	"#1E90FF",
-	"#8A2BE2",
-	"#FF69B4",
-];
-
-export type ChatMessage =
-	| {
-			id: string;
-			kind: "chat";
-			name: string;
-			color: string;
-			text: string;
-			timestamp: number;
-			avatarUrl: string;
-	  }
-	| {id: string; kind: "system"; text: string; timestamp: number};
+export type {ChatMessage};
 
 const TIMESTAMP_MODES = ["off", "24h", "12h"] as const;
 const AVATAR_MODES = ["off", "on"] as const;
+const PRESENCE_MODES = ["off", "on"] as const;
 
 export type TimestampMode = (typeof TIMESTAMP_MODES)[number];
 export type AvatarMode = (typeof AVATAR_MODES)[number];
+export type PresenceMode = (typeof PRESENCE_MODES)[number];
 
 export type ChatSettings = {
 	timestampMode: TimestampMode;
 	avatarMode: AvatarMode;
+	// presence join/leave/reconnect lines off by default per HANDOFF; users opt
+	// in from the chat settings popover.
+	presenceMode: PresenceMode;
 };
 
-export const DEFAULT_CHAT_SETTINGS: ChatSettings = {timestampMode: "24h", avatarMode: "on"};
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
+	timestampMode: "24h",
+	avatarMode: "on",
+	presenceMode: "off",
+};
 
 const PIN_THRESHOLD = 8;
-const AVATAR_SRC = "/images/sprites/windfish.png";
 
 function isTimestampMode(v: string): v is TimestampMode {
 	return TIMESTAMP_MODES.some((m) => m === v);
@@ -53,6 +44,10 @@ function isTimestampMode(v: string): v is TimestampMode {
 
 function isAvatarMode(v: string): v is AvatarMode {
 	return AVATAR_MODES.some((m) => m === v);
+}
+
+function isPresenceMode(v: string): v is PresenceMode {
+	return PRESENCE_MODES.some((m) => m === v);
 }
 
 function fmtTime(ts: number, mode: TimestampMode) {
@@ -64,37 +59,65 @@ function fmtTime(ts: number, mode: TimestampMode) {
 	return `${h12}:${mm} ${d.getHours() < 12 ? "AM" : "PM"}`;
 }
 
-function Chat({
-	currentUser,
-	initialMessages,
-	initialSettings = DEFAULT_CHAT_SETTINGS,
-	onSettingsChange,
-	className,
-}: {
-	currentUser: {name: string; color: string};
-	initialMessages: ChatMessage[];
-	initialSettings?: ChatSettings;
+function resolveAvatarSprite(avatarId: string) {
+	return (AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0]).sprite;
+}
+
+function resolvePaletteSwap(paletteId: string | null) {
+	if (!paletteId) return undefined;
+	return PALETTES.find((p) => p.id === paletteId)?.palette;
+}
+
+// inline 16px avatar cell. wraps SpriteCanvas in a fixed-size flex item so
+// rows stay aligned regardless of the per-sprite padding the canvas adds.
+export function AvatarCell({avatarId, paletteId}: {avatarId: string; paletteId: string | null}) {
+	return (
+		<span className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden">
+			<SpriteCanvas
+				sprite={resolveAvatarSprite(avatarId)}
+				scale={1}
+				paletteSwap={resolvePaletteSwap(paletteId)}
+			/>
+		</span>
+	);
+}
+
+function presenceVerb(action: "join" | "leave" | "reconnect") {
+	if (action === "join") return "joined";
+	if (action === "leave") return "left";
+	return "reconnected";
+}
+
+type ChatProps = {
+	messages: readonly ChatMessage[];
+	settings?: ChatSettings;
 	onSettingsChange?: (settings: ChatSettings) => void;
+	onSend?: (text: string) => void;
+	// gates the input + send button; matches connection state in online mode
+	// (disabled during `connecting`/`resuming`).
+	canSend?: boolean;
 	className?: string;
-}) {
-	const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+};
+
+function Chat(props: ChatProps) {
+	const {
+		messages,
+		settings = DEFAULT_CHAT_SETTINGS,
+		onSettingsChange,
+		onSend,
+		canSend = true,
+		className,
+	} = props;
 	const [input, setInput] = useState("");
-	const [settings, setSettings] = useState<ChatSettings>(initialSettings);
 	const [pinned, setPinned] = useState(true);
 	const scrollRootRef = useRef<HTMLDivElement | null>(null);
 	const viewportRef = useRef<HTMLElement | null>(null);
-	const {timestampMode, avatarMode} = settings;
+	const {timestampMode, avatarMode, presenceMode} = settings;
 
 	const updateSettings = (patch: Partial<ChatSettings>) => {
-		setSettings((prev) => {
-			const next = {...prev, ...patch};
-			onSettingsChange?.(next);
-			return next;
-		});
+		onSettingsChange?.({...settings, ...patch});
 	};
 
-	// radix scroll-area exposes its scrollable node via data-slot; resolve it
-	// once mounted so we can drive scrollTop directly and observe scroll position.
 	useLayoutEffect(() => {
 		const vp =
 			scrollRootRef.current?.querySelector<HTMLElement>(
@@ -122,19 +145,8 @@ function Chat({
 
 	const submit = () => {
 		const text = input.trim();
-		if (!text) return;
-		setMessages((prev) => [
-			...prev,
-			{
-				id: crypto.randomUUID(),
-				kind: "chat",
-				name: currentUser.name,
-				color: currentUser.color,
-				text,
-				timestamp: Date.now(),
-				avatarUrl: AVATAR_SRC,
-			},
-		]);
+		if (!text || !canSend) return;
+		onSend?.(text);
 		setInput("");
 		setPinned(true);
 	};
@@ -150,142 +162,215 @@ function Chat({
 			<div className={cn("flex h-full min-h-0 flex-col", className)}>
 				<ScrollArea ref={scrollRootRef} className="min-h-0 flex-1">
 					<div className="flex flex-col gap-1 px-3 py-2">
-						{messages.map((m) => {
-							const ts = fmtTime(m.timestamp, timestampMode);
-							if (m.kind === "system")
-								return (
-									<div
-										key={m.id}
-										className="flex items-start gap-1.5 leading-snug text-neutral-500 italic"
-									>
-										{avatarMode === "on" && (
-											<div className="h-5 w-5 shrink-0" />
-										)}
-										<div className="min-w-0 flex-1 break-words">
-											{ts && (
-												<span className="mr-1 text-neutral-600">{ts}</span>
-											)}
-											{m.text}
-										</div>
-									</div>
-								);
-							return (
-								<div key={m.id} className="flex items-start gap-1.5 leading-snug">
-									{avatarMode === "on" && (
-										<img
-											src={m.avatarUrl}
-											alt=""
-											className="h-5 w-5 shrink-0 -translate-y-1/12"
-											style={{imageRendering: "pixelated"}}
-										/>
-									)}
-									<div className="min-w-0 flex-1 break-words">
-										{ts && <span className="mr-1 text-neutral-500">{ts}</span>}
-										<span style={{color: m.color}} className="font-semibold">
-											{m.name}
-										</span>
-										<span className="text-neutral-400">: </span>
-										<span>{m.text}</span>
-									</div>
-								</div>
-							);
-						})}
+						{messages.map((m) => renderRow(m, timestampMode, avatarMode, presenceMode))}
 					</div>
 				</ScrollArea>
-				<div className="relative border-t border-white/10 p-2">
-					{!pinned && (
-						<button
-							type="button"
-							onClick={scrollToBottom}
-							className="absolute -top-9 left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-black/80 text-neutral-100 shadow-md ring-1 ring-white/10 hover:bg-black"
-							aria-label="jump to bottom"
-						>
-							<ChevronDown className="h-4 w-4" />
-						</button>
-					)}
-					<div className="flex items-center gap-1">
-						<Popover>
-							<Tooltip>
-								<PopoverTrigger asChild>
-									<TooltipTrigger asChild>
-										<Button
-											variant="ghost"
-											size="icon-sm"
-											aria-label="chat settings"
-										>
-											<Settings />
-										</Button>
-									</TooltipTrigger>
-								</PopoverTrigger>
-								<TooltipContent side="top">Settings</TooltipContent>
-							</Tooltip>
-							<PopoverContent side="top" align="start" className="w-auto">
-								<div className="grid grid-cols-[auto_auto] items-center gap-x-3 gap-y-2 text-xs">
-									<span className="text-muted-foreground">timestamps</span>
-									<ToggleGroup
-										type="single"
-										value={timestampMode}
-										size="sm"
-										spacing={0}
-										variant="outline"
-										onValueChange={(v) =>
-											isTimestampMode(v) && updateSettings({timestampMode: v})
-										}
-									>
-										{TIMESTAMP_MODES.map((m) => (
-											<ToggleGroupItem key={m} value={m}>
-												{m}
-											</ToggleGroupItem>
-										))}
-									</ToggleGroup>
-									<span className="text-muted-foreground">avatars</span>
-									<ToggleGroup
-										type="single"
-										value={avatarMode}
-										size="sm"
-										spacing={0}
-										variant="outline"
-										onValueChange={(v) =>
-											isAvatarMode(v) && updateSettings({avatarMode: v})
-										}
-									>
-										{AVATAR_MODES.map((m) => (
-											<ToggleGroupItem key={m} value={m}>
-												{m}
-											</ToggleGroupItem>
-										))}
-									</ToggleGroup>
-								</div>
-							</PopoverContent>
-						</Popover>
-						<Input
-							value={input}
-							onChange={(e) => setInput(e.target.value)}
-							onKeyDown={onKeyDown}
-							maxLength={500}
-							placeholder="say something…"
-							className="h-7 text-xs"
-						/>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon-sm"
-									onClick={submit}
-									disabled={!input.trim()}
-									aria-label="send"
-								>
-									<Send />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent side="top">Send</TooltipContent>
-						</Tooltip>
-					</div>
-				</div>
+				<ComposeRow
+					pinned={pinned}
+					onScrollToBottom={scrollToBottom}
+					settings={settings}
+					updateSettings={updateSettings}
+					input={input}
+					setInput={setInput}
+					onKeyDown={onKeyDown}
+					submit={submit}
+					canSend={canSend}
+				/>
 			</div>
 		</TooltipProvider>
 	);
 }
 
 export default Chat;
+
+function renderRow(
+	m: ChatMessage,
+	timestampMode: TimestampMode,
+	avatarMode: AvatarMode,
+	presenceMode: PresenceMode
+) {
+	const ts = fmtTime(m.timestamp, timestampMode);
+	if (m.kind === "system") {
+		return (
+			<div
+				key={m.id}
+				className="flex items-start gap-1.5 leading-snug text-neutral-500 italic"
+			>
+				{avatarMode === "on" && <div className="h-5 w-5 shrink-0" />}
+				<div className="min-w-0 flex-1 break-words">
+					{ts && <span className="mr-1 text-neutral-600">{ts}</span>}
+					{m.text}
+				</div>
+			</div>
+		);
+	}
+	if (m.kind === "presence") {
+		if (presenceMode === "off") return null;
+		return (
+			<div
+				key={m.id}
+				className="flex items-start gap-1.5 leading-snug text-neutral-500 italic"
+			>
+				{avatarMode === "on" && (
+					<AvatarCell avatarId={m.avatarId} paletteId={m.paletteId} />
+				)}
+				<div className="min-w-0 flex-1 break-words">
+					{ts && <span className="mr-1 text-neutral-600">{ts}</span>}
+					<span style={{color: m.color}}>{m.name}</span>
+					<span> {presenceVerb(m.action)}</span>
+				</div>
+			</div>
+		);
+	}
+	return (
+		<div key={m.id} className="flex items-start gap-1.5 leading-snug">
+			{avatarMode === "on" && <AvatarCell avatarId={m.avatarId} paletteId={m.paletteId} />}
+			<div className="min-w-0 flex-1 break-words">
+				{ts && <span className="mr-1 text-neutral-500">{ts}</span>}
+				<span style={{color: m.color}} className="font-semibold">
+					{m.name}
+				</span>
+				<span className="text-neutral-400">: </span>
+				<span>{m.text}</span>
+			</div>
+		</div>
+	);
+}
+
+type ComposeRowProps = {
+	pinned: boolean;
+	onScrollToBottom: () => void;
+	settings: ChatSettings;
+	updateSettings: (patch: Partial<ChatSettings>) => void;
+	input: string;
+	setInput: (v: string) => void;
+	onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
+	submit: () => void;
+	canSend: boolean;
+};
+
+function ComposeRow({
+	pinned,
+	onScrollToBottom,
+	settings,
+	updateSettings,
+	input,
+	setInput,
+	onKeyDown,
+	submit,
+	canSend,
+}: ComposeRowProps) {
+	return (
+		<div className="relative border-t border-white/10 p-2">
+			{!pinned && (
+				<button
+					type="button"
+					onClick={onScrollToBottom}
+					className="absolute -top-9 left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-black/80 text-neutral-100 shadow-md ring-1 ring-white/10 hover:bg-black"
+					aria-label="jump to bottom"
+				>
+					<ChevronDown className="h-4 w-4" />
+				</button>
+			)}
+			<div className="flex items-center gap-1">
+				<SettingsPopover settings={settings} onChange={updateSettings} />
+				<Input
+					value={input}
+					onChange={(e) => setInput(e.target.value)}
+					onKeyDown={onKeyDown}
+					maxLength={500}
+					disabled={!canSend}
+					placeholder={canSend ? "say something…" : "connecting…"}
+					className="h-7 text-xs"
+				/>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-sm"
+							onClick={submit}
+							disabled={!canSend || !input.trim()}
+							aria-label="send"
+						>
+							<Send />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side="top">Send</TooltipContent>
+				</Tooltip>
+			</div>
+		</div>
+	);
+}
+
+type SettingsPopoverProps = {
+	settings: ChatSettings;
+	onChange: (patch: Partial<ChatSettings>) => void;
+};
+
+function SettingsPopover({settings, onChange}: SettingsPopoverProps) {
+	const {timestampMode, avatarMode, presenceMode} = settings;
+	return (
+		<Popover>
+			<Tooltip>
+				<PopoverTrigger asChild>
+					<TooltipTrigger asChild>
+						<Button variant="ghost" size="icon-sm" aria-label="chat settings">
+							<Settings />
+						</Button>
+					</TooltipTrigger>
+				</PopoverTrigger>
+				<TooltipContent side="top">Settings</TooltipContent>
+			</Tooltip>
+			<PopoverContent side="top" align="start" className="w-auto">
+				<div className="grid grid-cols-[auto_auto] items-center gap-x-3 gap-y-2 text-xs">
+					<span className="text-muted-foreground">timestamps</span>
+					<ToggleGroup
+						type="single"
+						value={timestampMode}
+						size="sm"
+						spacing={0}
+						variant="outline"
+						onValueChange={(v) => isTimestampMode(v) && onChange({timestampMode: v})}
+					>
+						{TIMESTAMP_MODES.map((m) => (
+							<ToggleGroupItem key={m} value={m}>
+								{m}
+							</ToggleGroupItem>
+						))}
+					</ToggleGroup>
+					<span className="text-muted-foreground">avatars</span>
+					<ToggleGroup
+						type="single"
+						value={avatarMode}
+						size="sm"
+						spacing={0}
+						variant="outline"
+						onValueChange={(v) => isAvatarMode(v) && onChange({avatarMode: v})}
+					>
+						{AVATAR_MODES.map((m) => (
+							<ToggleGroupItem key={m} value={m}>
+								{m}
+							</ToggleGroupItem>
+						))}
+					</ToggleGroup>
+					<span className="text-muted-foreground">presence</span>
+					<ToggleGroup
+						type="single"
+						value={presenceMode}
+						size="sm"
+						spacing={0}
+						variant="outline"
+						onValueChange={(v) => isPresenceMode(v) && onChange({presenceMode: v})}
+					>
+						{PRESENCE_MODES.map((m) => (
+							<ToggleGroupItem key={m} value={m}>
+								{m}
+							</ToggleGroupItem>
+						))}
+					</ToggleGroup>
+				</div>
+			</PopoverContent>
+		</Popover>
+	);
+}

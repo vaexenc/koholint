@@ -1,5 +1,5 @@
-import {AvatarPickerDialog} from "@/components/avatar-picker/AvatarPickerDialog";
 import {AVATARS} from "@/components/avatar-picker/registry";
+import {SettingsDialog} from "@/components/SettingsDialog";
 import {Button} from "@/components/ui/button";
 import {useQueries} from "@tanstack/react-query";
 import {useState} from "react";
@@ -30,7 +30,7 @@ function TestPage() {
 	return (
 		<div className="flex min-h-screen items-center justify-center bg-background p-8">
 			{ready ? (
-				<AvatarPickerDialog
+				<SettingsDialog
 					open={open}
 					onOpenChange={setOpen}
 					avatarId={avatarId}

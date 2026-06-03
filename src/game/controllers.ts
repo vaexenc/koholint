@@ -9,7 +9,10 @@ export interface InputProvider {
 }
 
 export class StaticInputProvider implements InputProvider {
-	constructor(private input: CharacterInput = NEUTRAL_INPUT) {}
+	private input: CharacterInput;
+	constructor(input: CharacterInput = NEUTRAL_INPUT) {
+		this.input = input;
+	}
 	setInput(input: CharacterInput): void {
 		this.input = input;
 	}
@@ -31,65 +34,6 @@ export const DEFAULT_KEY_BINDINGS: KeyBindings = {
 	left: ["a", "arrowleft"],
 	right: ["d", "arrowright"],
 };
-
-// collects browser key state for one entity. owned by the player session, not
-// by the world: the world only sees the sampled input each tick, which keeps
-// the simulation independent of dom event timing.
-export class KeyboardInputProvider implements InputProvider {
-	private pressed = new Set<string>();
-	private bound: KeyBindings;
-	private boundKeys: Set<string>;
-
-	constructor(bindings: KeyBindings = DEFAULT_KEY_BINDINGS, private target: Window = window) {
-		this.bound = bindings;
-		this.boundKeys = new Set(
-			[...bindings.up, ...bindings.down, ...bindings.left, ...bindings.right].map((k) =>
-				k.toLowerCase()
-			)
-		);
-		target.addEventListener("keydown", this.onKeyDown);
-		target.addEventListener("keyup", this.onKeyUp);
-		target.addEventListener("blur", this.onBlur);
-	}
-
-	sample(): CharacterInput {
-		return {
-			up: this.anyDown(this.bound.up),
-			down: this.anyDown(this.bound.down),
-			left: this.anyDown(this.bound.left),
-			right: this.anyDown(this.bound.right),
-		};
-	}
-
-	dispose(): void {
-		this.target.removeEventListener("keydown", this.onKeyDown);
-		this.target.removeEventListener("keyup", this.onKeyUp);
-		this.target.removeEventListener("blur", this.onBlur);
-		this.pressed.clear();
-	}
-
-	private anyDown(keys: readonly string[]): boolean {
-		for (const k of keys) if (this.pressed.has(k.toLowerCase())) return true;
-		return false;
-	}
-
-	private onKeyDown = (e: KeyboardEvent) => {
-		const k = e.key.toLowerCase();
-		if (!this.boundKeys.has(k)) return;
-		this.pressed.add(k);
-		// stop arrow keys from scrolling the page or stealing caret focus
-		// from overlays.
-		e.preventDefault();
-	};
-
-	private onKeyUp = (e: KeyboardEvent) => {
-		const k = e.key.toLowerCase();
-		if (!this.boundKeys.has(k)) return;
-		this.pressed.delete(k);
-	};
-
-	private onBlur = () => this.pressed.clear();
-}
 
 const DIRECTIONS: readonly Direction[] = ["up", "down", "left", "right"];
 const RANDOM_MIN_HOLD_MS = 300;

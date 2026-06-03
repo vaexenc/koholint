@@ -6,6 +6,7 @@ import {
 import {drawSpriteFrame, drawSpriteShadow} from "@/sprites/draw";
 import {buildColorMap, recolorImage} from "@/sprites/paletteSwap";
 import {characterAabb, type BasicCharacter} from "./character";
+import {lerp} from "./math";
 import {isSwimTile} from "./terrain";
 import type {EntityId} from "./types";
 import type {World} from "./world";
@@ -100,7 +101,7 @@ export class CharacterRenderer {
 		const y = renderY(char, alpha);
 		// jump offset lifts the sprite only; the shadow stays anchored to the
 		// ground projection so it reads as a hop rather than a teleport.
-		const jumpOffset = char.prevJumpOffsetY + (char.jumpOffsetY - char.prevJumpOffsetY) * alpha;
+		const jumpOffset = lerp(char.prevJumpOffsetY, char.jumpOffsetY, alpha);
 		if (swimming) {
 			// water line is fixed; bobbing the sprite up and down makes the
 			// visible portion above the line grow and shrink naturally. skip
@@ -161,11 +162,11 @@ function swimBobOffset(timeMs: number): number {
 }
 
 function renderX(char: BasicCharacter, alpha: number): number {
-	return char.prevX + (char.x - char.prevX) * alpha;
+	return lerp(char.prevX, char.x, alpha);
 }
 
 function renderY(char: BasicCharacter, alpha: number): number {
-	return char.prevY + (char.y - char.prevY) * alpha;
+	return lerp(char.prevY, char.y, alpha);
 }
 
 function visualFeetY(char: BasicCharacter, alpha: number, swimming: boolean): number {

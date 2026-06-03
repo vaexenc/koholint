@@ -4,10 +4,7 @@ import {useEffect, useState, type Dispatch, type SetStateAction} from "react";
 // initialValue doubles as the fallback when nothing is stored or the stored
 // payload fails to parse. an undefined value clears the slot rather than
 // writing the literal string "undefined".
-export function useLocalStorage<T>(
-	key: string,
-	initialValue: T
-): [T, Dispatch<SetStateAction<T>>] {
+export function useLocalStorage<T>(key: string, initialValue: T): [T, Dispatch<SetStateAction<T>>] {
 	const [value, setValue] = useState<T>(() => readStored(key, initialValue));
 	useEffect(() => {
 		try {

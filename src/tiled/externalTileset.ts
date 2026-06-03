@@ -5,36 +5,64 @@
 
 type Json = Record<string, unknown>;
 
-export async function expandExternalTilesets(data: unknown, mapUrl: string): Promise<unknown> {
+// minimal structural view of an XML element — the subset of the DOM Element
+// surface this parser actually touches. typing against this instead of the DOM
+// `Element` keeps the module DOM-free, so it type-checks under the server's
+// node config. both the browser's DOMParser and the server's xmldom return
+// objects that satisfy this shape.
+export interface XmlElement {
+	readonly nodeName: string;
+	readonly tagName: string;
+	getAttribute(name: string): string | null;
+	readonly children: ArrayLike<XmlElement>;
+}
+
+// pluggable IO so the same loader can run in the browser (fetch + DOMParser +
+// window.location) and on a server (fs + an injected xml parser + a node url
+// resolver). the env is required — each platform entry point supplies its own
+// (browserTilesetLoaderEnv from ./browserEnv, nodeTilesetLoaderEnv on the
+// server).
+export type TilesetLoaderEnv = {
+	readonly fetchText: (url: string) => Promise<string>;
+	readonly parseXml: (xml: string, sourceUrl: string) => XmlElement;
+	readonly resolveUrl: (base: string, relative: string) => string;
+};
+
+export async function expandExternalTilesets(
+	data: unknown,
+	mapUrl: string,
+	env: TilesetLoaderEnv
+): Promise<unknown> {
 	if (!isObject(data)) return data;
 	const tilesets = data.tilesets;
 	if (!Array.isArray(tilesets)) return data;
-	const expanded = await Promise.all(tilesets.map((entry) => expandIfExternal(entry, mapUrl)));
+	const expanded = await Promise.all(
+		tilesets.map((entry) => expandIfExternal(entry, mapUrl, env))
+	);
 	return {...data, tilesets: expanded};
 }
 
-async function expandIfExternal(entry: unknown, mapUrl: string): Promise<unknown> {
+async function expandIfExternal(
+	entry: unknown,
+	mapUrl: string,
+	env: TilesetLoaderEnv
+): Promise<unknown> {
 	if (!isObject(entry)) return entry;
 	const {source, firstgid} = entry;
 	if (typeof source !== "string" || typeof firstgid !== "number") return entry;
-	const tsxUrl = resolveUrl(mapUrl, source);
-	const response = await fetch(tsxUrl);
-	if (!response.ok) {
-		throw new Error(
-			`failed to fetch tileset ${tsxUrl}: ${response.status} ${response.statusText}`
-		);
-	}
-	const xml = await response.text();
-	return parseTsxTileset(xml, tsxUrl, firstgid);
+	const tsxUrl = env.resolveUrl(mapUrl, source);
+	const xml = await env.fetchText(tsxUrl);
+	return parseTsxTileset(xml, tsxUrl, firstgid, env);
 }
 
-function parseTsxTileset(xml: string, tsxUrl: string, firstgid: number): Json {
-	const doc = new DOMParser().parseFromString(xml, "application/xml");
-	if (doc.getElementsByTagName("parsererror").length > 0) {
-		throw new Error(`failed to parse tileset xml at ${tsxUrl}`);
-	}
-	const root = doc.documentElement;
-	if (!root || root.nodeName !== "tileset") {
+function parseTsxTileset(
+	xml: string,
+	tsxUrl: string,
+	firstgid: number,
+	env: TilesetLoaderEnv
+): Json {
+	const root = env.parseXml(xml, tsxUrl);
+	if (root.nodeName !== "tileset") {
 		throw new Error(`unexpected root element in tileset ${tsxUrl}`);
 	}
 	const tileset: Json = {firstgid};
@@ -48,7 +76,7 @@ function parseTsxTileset(xml: string, tsxUrl: string, firstgid: number): Json {
 	const image = firstChild(root, "image");
 	if (image) {
 		const imageSource = image.getAttribute("source");
-		if (typeof imageSource === "string") tileset.image = resolveUrl(tsxUrl, imageSource);
+		if (typeof imageSource === "string") tileset.image = env.resolveUrl(tsxUrl, imageSource);
 		copyNumberAttr(image, "width", tileset, "imagewidth");
 		copyNumberAttr(image, "height", tileset, "imageheight");
 	}
@@ -57,7 +85,7 @@ function parseTsxTileset(xml: string, tsxUrl: string, firstgid: number): Json {
 	return tileset;
 }
 
-function parseTile(el: Element): Json {
+function parseTile(el: XmlElement): Json {
 	const idAttr = el.getAttribute("id");
 	const id = idAttr === null ? Number.NaN : Number(idAttr);
 	const tile: Json = {id};
@@ -79,7 +107,7 @@ function parseTile(el: Element): Json {
 	return tile;
 }
 
-function parseProperty(el: Element): Json {
+function parseProperty(el: XmlElement): Json {
 	const name = el.getAttribute("name") ?? "";
 	const type = el.getAttribute("type") ?? "string";
 	const raw = el.getAttribute("value") ?? "";
@@ -92,7 +120,7 @@ function coercePropertyValue(type: string, raw: string): unknown {
 	return raw;
 }
 
-function parseObjectGroup(el: Element): Json {
+function parseObjectGroup(el: XmlElement): Json {
 	const objects = childrenByTag(el, "object").map(parseObject);
 	return {
 		name: el.getAttribute("name") ?? "",
@@ -107,7 +135,7 @@ function parseObjectGroup(el: Element): Json {
 	};
 }
 
-function parseObject(el: Element): Json {
+function parseObject(el: XmlElement): Json {
 	return {
 		id: numberAttr(el, "id") ?? 0,
 		name: el.getAttribute("name") ?? "",
@@ -121,32 +149,32 @@ function parseObject(el: Element): Json {
 	};
 }
 
-function childrenByTag(parent: Element, tag: string): Element[] {
-	const out: Element[] = [];
+function childrenByTag(parent: XmlElement, tag: string): XmlElement[] {
+	const out: XmlElement[] = [];
 	for (const child of Array.from(parent.children)) {
 		if (child.tagName === tag) out.push(child);
 	}
 	return out;
 }
 
-function firstChild(parent: Element, tag: string): Element | null {
+function firstChild(parent: XmlElement, tag: string): XmlElement | null {
 	for (const child of Array.from(parent.children)) {
 		if (child.tagName === tag) return child;
 	}
 	return null;
 }
 
-function copyStringAttr(el: Element, attr: string, target: Json, key: string): void {
+function copyStringAttr(el: XmlElement, attr: string, target: Json, key: string): void {
 	const value = el.getAttribute(attr);
 	if (value !== null) target[key] = value;
 }
 
-function copyNumberAttr(el: Element, attr: string, target: Json, key: string): void {
+function copyNumberAttr(el: XmlElement, attr: string, target: Json, key: string): void {
 	const value = numberAttr(el, attr);
 	if (value !== undefined) target[key] = value;
 }
 
-function numberAttr(el: Element, attr: string): number | undefined {
+function numberAttr(el: XmlElement, attr: string): number | undefined {
 	const raw = el.getAttribute(attr);
 	if (raw === null) return undefined;
 	const value = Number(raw);
@@ -155,8 +183,4 @@ function numberAttr(el: Element, attr: string): number | undefined {
 
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function resolveUrl(base: string, relative: string): string {
-	return new URL(relative, new URL(base, window.location.href)).toString();
 }

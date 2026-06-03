@@ -11,6 +11,7 @@ import {
 	type HoleGrid,
 	type SolidGrid,
 } from "./collision";
+import {lerp} from "./math";
 import {findOverlappingTeleporter, type Teleporter, type TeleporterGrid} from "./teleport";
 import {getTerrainSpeedMultiplier, type TerrainGrid} from "./terrain";
 import {inputHasMovement, type CharacterInput, type Direction, type EntityId} from "./types";
@@ -245,8 +246,8 @@ function advanceJump(char: BasicCharacter, dtSec: number): void {
 	const jump = char.jump!;
 	jump.elapsedMs += dtSec * 1000;
 	const t = Math.min(1, jump.elapsedMs / jump.durationMs);
-	char.x = jump.startX + (jump.endX - jump.startX) * t;
-	char.y = jump.startY + (jump.endY - jump.startY) * t;
+	char.x = lerp(jump.startX, jump.endX, t);
+	char.y = lerp(jump.startY, jump.endY, t);
 	char.jumpOffsetY = jumpArcHeight(t);
 	if (t >= 1) {
 		char.x = jump.endX;

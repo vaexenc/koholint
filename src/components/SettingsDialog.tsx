@@ -1,3 +1,4 @@
+import {AVATARS, type Avatar} from "@/components/avatar-picker/registry";
 import {SpriteCanvas} from "@/components/SpriteCanvas";
 import {
 	Dialog,
@@ -6,13 +7,14 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@/components/ui/dialog";
+import {Input} from "@/components/ui/input";
+import {validateName} from "@/lib/validateName";
 import {
 	CLASSIC_CHARACTER_ANIMATIONS,
 	type ClassicCharacterAnimationName,
 } from "@/sprites/animations";
 import {PALETTES, type NamedPalette} from "@/sprites/palettes";
 import {useEffect, useState, type ReactNode} from "react";
-import {AVATARS, type Avatar} from "./registry";
 
 const PREVIEW_POSE_INTERVAL_MS = 1000;
 
@@ -114,35 +116,74 @@ function PaletteOffSwatch({selected, onSelect}: PaletteOffSwatchProps) {
 	);
 }
 
-type AvatarPickerDialogProps = {
+type NameFieldProps = {
+	value: string;
+	onChange: (next: string) => void;
+	serverError?: string;
+};
+
+function NameField({value, onChange, serverError}: NameFieldProps) {
+	const check = validateName(value);
+	const localError = check.ok ? null : check.reason;
+	const error = localError ?? serverError ?? null;
+	return (
+		<label className="flex flex-col gap-1.5">
+			<span className="text-xs text-muted-foreground">Display name</span>
+			<Input
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder="your name on koholint"
+				maxLength={40}
+				aria-invalid={error ? true : undefined}
+			/>
+			{error ? <span className="text-xs text-destructive">{error}</span> : null}
+		</label>
+	);
+}
+
+type SettingsDialogProps = {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	avatarId: string;
 	paletteId: string | null;
 	onChange: (avatarId: string, paletteId: string | null) => void;
+	// online mode wires these to show the name field. omitting `name` hides the
+	// field entirely (offline mode keeps a single shared component, name-less).
+	name?: string;
+	onNameChange?: (next: string) => void;
+	// authoritative reject reason from the server, surfaced alongside local
+	// validation so the user sees both layers of feedback.
+	serverNameError?: string;
 	trigger?: ReactNode;
 };
 
-export function AvatarPickerDialog({
+export function SettingsDialog({
 	open,
 	onOpenChange,
 	avatarId,
 	paletteId,
 	onChange,
+	name,
+	onNameChange,
+	serverNameError,
 	trigger,
-}: AvatarPickerDialogProps) {
+}: SettingsDialogProps) {
 	const selected = AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0];
 	const selectedPalette = paletteId ? PALETTES.find((p) => p.id === paletteId) : undefined;
 	const paletteSwap = selectedPalette?.palette;
 	// gated on `open` so we don't churn rAF/intervals in the background.
 	const previewAnimation = useCycle(PREVIEW_ANIMATION_CYCLE, PREVIEW_POSE_INTERVAL_MS, open);
+	const showName = name !== undefined && onNameChange !== undefined;
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			{trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
 			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader>
-					<DialogTitle>Select an avatar</DialogTitle>
+					<DialogTitle>Settings</DialogTitle>
 				</DialogHeader>
+				{showName ? (
+					<NameField value={name} onChange={onNameChange} serverError={serverNameError} />
+				) : null}
 				<div className="flex gap-6">
 					<ul className="flex w-40 flex-col gap-2">
 						{AVATARS.map((avatar) => (

@@ -6612,6 +6612,12 @@
                          "height":48,
                          "id":172,
                          "name":"",
+                         "properties":[
+                                {
+                                 "name":"spawn",
+                                 "type":"bool",
+                                 "value":true
+                                }],
                          "rotation":0,
                          "type":"",
                          "visible":true,
@@ -6623,6 +6629,12 @@
                          "height":32,
                          "id":173,
                          "name":"",
+                         "properties":[
+                                {
+                                 "name":"spawn",
+                                 "type":"bool",
+                                 "value":true
+                                }],
                          "rotation":0,
                          "type":"",
                          "visible":true,
@@ -6634,6 +6646,12 @@
                          "height":32,
                          "id":174,
                          "name":"",
+                         "properties":[
+                                {
+                                 "name":"spawn",
+                                 "type":"bool",
+                                 "value":true
+                                }],
                          "rotation":0,
                          "type":"",
                          "visible":true,
@@ -6645,6 +6663,12 @@
                          "height":32,
                          "id":175,
                          "name":"",
+                         "properties":[
+                                {
+                                 "name":"spawn",
+                                 "type":"bool",
+                                 "value":true
+                                }],
                          "rotation":0,
                          "type":"",
                          "visible":true,

@@ -1,5 +1,5 @@
-import type {ResolvedSpriteAnimationFrame} from "./animations";
 import type {SpriteSheet} from "@/types";
+import type {ResolvedSpriteAnimationFrame} from "./animations";
 
 export type SheetPadding = {x: number; y: number};
 
