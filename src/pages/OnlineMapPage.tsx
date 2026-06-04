@@ -29,6 +29,7 @@ import {
 } from "@/protocol";
 import {paletteAccent} from "@/sprites/paletteAccent";
 import {PALETTES} from "@/sprites/palettes";
+import {ShieldCheck} from "lucide-react";
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 
 const DEFAULT_MAP_URL = "/maps/overworld.json";
@@ -652,6 +653,13 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 					<pre className="whitespace-pre-wrap text-red-400">{state.message}</pre>
 				)}
 				<div className="flex flex-col gap-2">
+					{isAdmin && (
+						<div className="flex items-center gap-1.5 self-start rounded bg-amber-400/15 px-2 py-1 text-amber-300 ring-1 ring-inset ring-amber-400/30">
+							<ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+							<span className="font-semibold">admin</span>
+							<span className="text-amber-200/70">· click tile to teleport</span>
+						</div>
+					)}
 					<label className="flex items-center gap-2">
 						<input
 							type="checkbox"
