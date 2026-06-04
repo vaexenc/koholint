@@ -25,4 +25,5 @@ dist-ssr
 
 # Custom
 AGENTS.md
+CLAUDE.md
 server/data/
