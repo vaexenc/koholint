@@ -8,8 +8,8 @@ import {loadTiledMap} from "@/tiled/loadMap";
 import {log} from "./log";
 import {nodeMapLoaderEnv} from "./loaderEnv";
 import {ResumeStore} from "./resume";
+import {collectSpawnRegions} from "@/game/spawn";
 import {Room} from "./rooms";
-import {collectSpawnRegions} from "./spawn";
 import {CLOSE_SHUTDOWN, WsServer} from "./ws";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -25,7 +25,7 @@ async function main(): Promise<void> {
 	const mapPath = path.resolve(MAP_FILE);
 	log.info(`boot: loading map from ${mapPath}`);
 	const map = await loadTiledMap(mapPath, nodeMapLoaderEnv);
-	const spawns = collectSpawnRegions(map);
+	const spawns = collectSpawnRegions(map, log.warn);
 	if (spawns.length === 0) {
 		log.error(
 			`boot: no spawn objects in ${mapPath} (need at least one object with spawn=true)`

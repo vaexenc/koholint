@@ -1,6 +1,5 @@
 import type {TiledMap} from "@/tiled/loadMap";
 import {hasBoolProperty, iterateObjectLayers} from "@/tiled/tileScan";
-import {log} from "./log";
 
 const SPAWN_PROPERTY = "spawn";
 
@@ -19,13 +18,16 @@ export type SpawnRegion =
 // uniformly-sampled rectangle. ellipses/polygons/polylines are intentionally
 // unsupported per HANDOFF — they're skipped with a warning so map authors get
 // feedback at boot instead of silent fallthrough.
-export function collectSpawnRegions(map: TiledMap): SpawnRegion[] {
+export function collectSpawnRegions(
+	map: TiledMap,
+	onWarn: (message: string) => void = console.warn
+): SpawnRegion[] {
 	const regions: SpawnRegion[] = [];
 	for (const layer of iterateObjectLayers(map)) {
 		for (const obj of layer.objects) {
 			if (!hasBoolProperty(obj.properties, SPAWN_PROPERTY)) continue;
 			if (isUnsupportedShape(obj)) {
-				log.warn(`spawn object ${obj.id ?? "?"} has unsupported shape — skipping`);
+				onWarn(`spawn object ${obj.id ?? "?"} has unsupported shape — skipping`);
 				continue;
 			}
 			const x = obj.x ?? 0;
@@ -59,4 +61,19 @@ export function sampleSpawn(
 	const region = regions[Math.floor(rng() * regions.length)];
 	if (region.kind === "point") return {x: region.x, y: region.y};
 	return {x: region.x + rng() * region.w, y: region.y + rng() * region.h};
+}
+
+// samples a spawn point, falling back to the map center when the map declares
+// no spawn regions (offline maps may omit them). centers on the sprite by
+// offsetting half its size off the top-left origin used for placement.
+export function sampleSpawnOrCenter(
+	regions: ReadonlyArray<SpawnRegion>,
+	mapPixelWidth: number,
+	mapPixelHeight: number,
+	spriteSize = 16,
+	rng: Rng = Math.random
+): {x: number; y: number} {
+	if (regions.length === 0)
+		return {x: mapPixelWidth / 2 - spriteSize / 2, y: mapPixelHeight / 2 - spriteSize / 2};
+	return sampleSpawn(regions, rng);
 }

@@ -6,6 +6,7 @@ export * from "./debugOverlay";
 export * from "./keyboardInput";
 export * from "./math";
 export * from "./render";
+export * from "./spawn";
 export * from "./teleport";
 export * from "./terrain";
 export * from "./types";

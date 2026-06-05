@@ -60,6 +60,10 @@ export type MapRendererInitContext = {
 
 export type MapRendererSetup = {
 	follow?: () => FollowTarget | null;
+	// world-space point to center the camera on at load instead of the map's
+	// geometric center (e.g. a spawn area). does not move with the simulation —
+	// the follow target takes over once follow is enabled.
+	initialFocus?: {x: number; y: number} | null;
 	dispose?: () => void;
 };
 
@@ -228,11 +232,17 @@ export function useMapRenderer({
 				worldRef.current = world;
 				mapRef.current = map;
 
-				// center the map in the viewport on first render. set current
-				// and target to the same value so the spring has nothing to
-				// animate at load.
-				const initialOffsetX = (window.innerWidth - mapPixelWidth * INITIAL_SCALE) / 2;
-				const initialOffsetY = (window.innerHeight - mapPixelHeight * INITIAL_SCALE) / 2;
+				// center the viewport on first render — on the requested focus
+				// point if init supplied one, otherwise on the map's geometric
+				// center. set current and target to the same value so the spring
+				// has nothing to animate at load.
+				const focus = setup.initialFocus;
+				const initialOffsetX = focus
+					? window.innerWidth / 2 - focus.x * INITIAL_SCALE
+					: (window.innerWidth - mapPixelWidth * INITIAL_SCALE) / 2;
+				const initialOffsetY = focus
+					? window.innerHeight / 2 - focus.y * INITIAL_SCALE
+					: (window.innerHeight - mapPixelHeight * INITIAL_SCALE) / 2;
 				cameraRef.current = {
 					scale: INITIAL_SCALE,
 					offsetX: initialOffsetX,

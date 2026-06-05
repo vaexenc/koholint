@@ -5,6 +5,7 @@ import {
 } from "@/game/character";
 import {buildCliffGrid, buildHoleGrid, buildSolidGrid} from "@/game/collision";
 import {StaticInputProvider} from "@/game/controllers";
+import {sampleSpawn, type SpawnRegion} from "@/game/spawn";
 import {buildTeleporterGrid} from "@/game/teleport";
 import {buildTerrainGrid} from "@/game/terrain";
 import {NEUTRAL_INPUT, type CharacterInput} from "@/game/types";
@@ -23,7 +24,6 @@ import {paletteAccent} from "@/sprites/paletteAccent";
 import type {TiledMap} from "@/tiled/loadMap";
 import type {HexColor, SpriteAsset} from "@/types";
 import {log} from "./log";
-import {sampleSpawn, type SpawnRegion} from "./spawn";
 
 // the server simulation never reads sprite pixels — it only needs the
 // collision box and the default sprite size — so we attach a 16x16 placeholder

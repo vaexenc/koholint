@@ -2,11 +2,13 @@ import {AVATARS} from "@/components/avatar-picker/registry";
 import {SettingsDialog} from "@/components/SettingsDialog";
 import {Button} from "@/components/ui/button";
 import {
+	collectSpawnRegions,
 	createBasicCharacter,
 	DEFAULT_TICK_RATE_HZ,
 	GameClock,
 	KeyboardInputProvider,
 	resolveCharacterCollision,
+	sampleSpawnOrCenter,
 	type BasicCharacter,
 	type World,
 } from "@/game";
@@ -76,16 +78,18 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	}, [tickRate]);
 
 	const init = useCallback((ctx: MapRendererInitContext) => {
-		const {world, renderer, mapPixelWidth, mapPixelHeight} = ctx;
+		const {map, world, renderer, mapPixelWidth, mapPixelHeight} = ctx;
 		const clock = new GameClock(tickRateRef.current);
+		const spawn = sampleSpawnOrCenter(collectSpawnRegions(map), mapPixelWidth, mapPixelHeight);
 		const player = createBasicCharacter({
 			id: PLAYER_CHARACTER_ID,
 			sprite: resolveAvatarSprite(avatarIdRef.current),
 			paletteSwap: resolvePaletteSwap(paletteIdRef.current),
-			x: mapPixelWidth / 2 - 8,
-			y: mapPixelHeight / 2 - 8,
+			x: spawn.x,
+			y: spawn.y,
 		});
 		world.addCharacter(player, new KeyboardInputProvider());
+		resolveCharacterCollision(player, world.grid, world.holes);
 		const invalidatePlayer = () => {
 			renderer.invalidate(player.id);
 			renderer.ensureLoaded([player]).catch(() => {});
@@ -93,6 +97,10 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		gameRef.current = {world, clock, player, invalidatePlayer};
 		return {
 			follow: () => player,
+			initialFocus: {
+				x: player.x + player.spriteWidth / 2,
+				y: player.y + player.spriteHeight / 2,
+			},
 			dispose: () => {
 				gameRef.current = null;
 			},

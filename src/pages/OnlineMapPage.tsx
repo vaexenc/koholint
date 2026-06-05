@@ -4,10 +4,12 @@ import ChatPanel, {type PlayerListEntry} from "@/components/ChatPanel";
 import {SettingsDialog} from "@/components/SettingsDialog";
 import {Button} from "@/components/ui/button";
 import {
+	collectSpawnRegions,
 	createBasicCharacter,
 	GameClock,
 	KeyboardInputProvider,
 	lerp,
+	sampleSpawnOrCenter,
 	StaticInputProvider,
 	World,
 	type BasicCharacter,
@@ -154,6 +156,11 @@ type OnlineGame = {
 	serverClock: ServerClock;
 	selfChar: BasicCharacter;
 	selfKeyboard: KeyboardInputProvider;
+	// the self character is withheld from the world (and so the renderer) until
+	// the server welcomes us with an authoritative spawn — no ghost player sits
+	// at the map center before the avatar is set up and the connection lands.
+	spawnSelf: () => void;
+	selfSpawned: boolean;
 	remotes: Map<number, RemoteEntry>;
 	remotesByConnId: Map<ConnId, RemoteEntry>;
 	tickIntervalMs: number;
@@ -489,21 +496,34 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 
 	const init = useCallback(
 		(ctx: MapRendererInitContext) => {
-			const {world, renderer, mapPixelWidth, mapPixelHeight} = ctx;
+			const {map, world, renderer, mapPixelWidth, mapPixelHeight} = ctx;
 			const serverClock = new ServerClock(new GameClock(SERVER_TICK_HZ));
 			const selfKeyboard = new KeyboardInputProvider();
 			// honor a dialog that's already open when the map finishes loading.
 			selfKeyboard.setEnabled(!settingsOpenRef.current);
+			const spawn = sampleSpawnOrCenter(
+				collectSpawnRegions(map),
+				mapPixelWidth,
+				mapPixelHeight
+			);
 			const selfChar = createBasicCharacter({
 				id: SELF_ENTITY_ID,
 				sprite: resolveAvatarSprite(profileRef.current.avatarId),
 				paletteSwap: resolvePaletteSwap(profileRef.current.paletteId),
-				x: mapPixelWidth / 2 - 8,
-				y: mapPixelHeight / 2 - 8,
+				x: spawn.x,
+				y: spawn.y,
 			});
-			world.addCharacter(selfChar, selfKeyboard);
 			const invalidateSelf = () => {
 				renderer.invalidate(selfChar.id);
+				renderer.ensureLoaded([selfChar]).catch(() => {});
+			};
+			// deferred until the welcome's spawn is applied (see step). idempotent
+			// so a resume/reconnect that re-welcomes doesn't double-register.
+			const spawnSelf = () => {
+				const game = gameRef.current;
+				if (!game || game.selfSpawned) return;
+				world.addCharacter(selfChar, selfKeyboard);
+				game.selfSpawned = true;
 				renderer.ensureLoaded([selfChar]).catch(() => {});
 			};
 			const remotes = new Map<number, RemoteEntry>();
@@ -567,6 +587,8 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 				addRemote,
 				removeRemote,
 				pendingSelfSnap: null,
+				spawnSelf,
+				selfSpawned: false,
 			};
 			const pending = pendingWelcomeRef.current;
 			if (pending) {
@@ -574,7 +596,10 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 				applyWelcomeToGame(pending);
 			}
 			return {
-				follow: () => selfChar,
+				// no follow target until the self character is actually in the
+				// world; before that the camera rests on the spawn area below.
+				follow: () => (gameRef.current?.selfSpawned ? selfChar : null),
+				initialFocus: {x: spawn.x, y: spawn.y},
 				dispose: () => {
 					gameRef.current = null;
 				},
@@ -589,6 +614,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		if (game.pendingSelfSnap) {
 			const snap = game.pendingSelfSnap;
 			game.pendingSelfSnap = null;
+			game.spawnSelf();
 			game.selfChar.x = snap.x;
 			game.selfChar.y = snap.y;
 			game.selfChar.prevX = snap.x;
