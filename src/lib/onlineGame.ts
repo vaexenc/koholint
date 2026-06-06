@@ -218,7 +218,11 @@ export class OnlineGame {
 		return this.selfSpawned ? this.selfChar : null;
 	}
 
-	drawWorldOverlay(ctx: CanvasRenderingContext2D, alpha: number): void {
+	drawScreenOverlay(
+		ctx: CanvasRenderingContext2D,
+		alpha: number,
+		worldToScreen: (x: number, y: number) => readonly [number, number]
+	): void {
 		if (!this.selfSpawned || this.movementLearned) return;
 		const seen = this.selfKeyboard.getSeenKeys();
 		if (isMovementLearned(seen)) {
@@ -226,11 +230,11 @@ export class OnlineGame {
 			this.deps.onMovementLearned();
 			return;
 		}
-		const centerX =
-			lerp(this.selfChar.prevX, this.selfChar.x, alpha) + this.selfChar.spriteWidth / 2;
-		const footY =
-			lerp(this.selfChar.prevY, this.selfChar.y, alpha) + this.selfChar.spriteHeight;
-		drawMovementHint(ctx, centerX, footY, seen, performance.now());
+		const [screenX, screenY] = worldToScreen(
+			lerp(this.selfChar.prevX, this.selfChar.x, alpha) + this.selfChar.spriteWidth / 2,
+			lerp(this.selfChar.prevY, this.selfChar.y, alpha) + this.selfChar.spriteHeight
+		);
+		drawMovementHint(ctx, screenX, screenY, seen, performance.now());
 	}
 
 	// deferred until the welcome's spawn is applied (see step). idempotent

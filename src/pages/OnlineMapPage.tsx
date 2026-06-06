@@ -261,10 +261,9 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 			game.setKeyboardEnabled(!settingsOpenRef.current);
 			gameRef.current = game;
 			return {
-				follow: () => game.followTarget(),
+				follow: game.followTarget.bind(game),
 				initialFocus: {x: game.spawn.x, y: game.spawn.y},
-				drawWorldOverlay: (ctx: CanvasRenderingContext2D, alpha: number) =>
-					game.drawWorldOverlay(ctx, alpha),
+				drawScreenOverlay: game.drawScreenOverlay.bind(game),
 				dispose: () => {
 					gameRef.current = null;
 				},

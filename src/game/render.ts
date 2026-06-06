@@ -111,11 +111,6 @@ export class CharacterRenderer {
 			const waterLineY = sunkY + char.spriteHeight * (1 - SWIM_CUT_FRACTION);
 			const clipTop = sunkY - SWIM_CLIP_PAD_PX - SWIM_BOB_AMP_PX;
 			ctx.save();
-			// reset to identity before clipping. drawSpriteFrame/Shadow leave
-			// the prior character's (possibly mirrored) transform on the ctx,
-			// which would otherwise warp the clip rect off the sprite and
-			// hide the swimmer entirely.
-			ctx.setTransform(1, 0, 0, 1, 0, 0);
 			ctx.beginPath();
 			ctx.rect(
 				x - SWIM_CLIP_PAD_PX,

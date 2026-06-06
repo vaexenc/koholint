@@ -21,7 +21,8 @@ export function computeSheetPadding(sheet: SpriteSheet): SheetPadding {
 // per-sprite offsets are art-space: they mirror with the sprite on their
 // axis so e.g. walk_right is a true mirror of walk_left rather than bobbing
 // the same way. a single setTransform anchors the matrix at the far edge of
-// any mirrored axis so the draw call always uses local (0,0).
+// any mirrored axis so the draw call always uses local (0,0). save/restore
+// the ctx so the mirrored transform doesn't leak into the next caller.
 export function drawSpriteFrame(
 	ctx: CanvasRenderingContext2D,
 	image: CanvasImageSource,
@@ -35,6 +36,7 @@ export function drawSpriteFrame(
 	const h = sprite.height * scale;
 	const dx = originX + (sprite.offsetX ?? 0) * (mirrorX ? -1 : 1) * scale;
 	const dy = originY + (sprite.offsetY ?? 0) * (mirrorY ? -1 : 1) * scale;
+	ctx.save();
 	ctx.setTransform(
 		mirrorX ? -1 : 1,
 		0,
@@ -44,6 +46,7 @@ export function drawSpriteFrame(
 		mirrorY ? dy + h : dy
 	);
 	ctx.drawImage(image, sprite.x, sprite.y, sprite.width, sprite.height, 0, 0, w, h);
+	ctx.restore();
 }
 
 // art-space shadow tuning. squish flattens the silhouette toward the ground;
@@ -74,12 +77,12 @@ export function drawSpriteShadow(
 	const tx = (mirrorX ? dx + w : dx) + SPRITE_SHADOW_OFFSET_X_PX * scale;
 	const ty =
 		(mirrorY ? dy + h : dy + h * (1 - SHADOW_SQUISH_Y)) + SPRITE_SHADOW_OFFSET_Y_PX * scale;
+	ctx.save();
 	ctx.setTransform(sx, 0, 0, sy, tx, ty);
 	// brightness(0) collapses rgb to black while preserving the sprite's
 	// alpha mask, giving a silhouette without needing an offscreen tint pass.
 	ctx.filter = "brightness(0)";
 	ctx.globalAlpha = SHADOW_ALPHA;
 	ctx.drawImage(image, sprite.x, sprite.y, sprite.width, sprite.height, 0, 0, w, h);
-	ctx.globalAlpha = 1;
-	ctx.filter = "none";
+	ctx.restore();
 }

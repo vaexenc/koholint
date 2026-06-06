@@ -64,10 +64,15 @@ export type MapRendererSetup = {
 	// geometric center (e.g. a spawn area). does not move with the simulation —
 	// the follow target takes over once follow is enabled.
 	initialFocus?: {x: number; y: number} | null;
-	// per-frame world-space overlay, drawn into the same offscreen as the map
-	// (after characters, before debug) so it shares the camera transform and
-	// pixel scaling. used for the movement hint.
-	drawWorldOverlay?: (ctx: CanvasRenderingContext2D, alpha: number) => void;
+	// per-frame screen-space overlay, drawn on the main canvas (CSS pixels)
+	// after the offscreen blit so it stays crisp regardless of camera zoom.
+	// `worldToScreen` projects a world-space anchor into the same CSS-pixel
+	// space the overlay draws in. used for the movement hint.
+	drawScreenOverlay?: (
+		ctx: CanvasRenderingContext2D,
+		alpha: number,
+		worldToScreen: (x: number, y: number) => readonly [number, number]
+	) => void;
 	dispose?: () => void;
 };
 
@@ -317,7 +322,6 @@ export function useMapRenderer({
 						debugObjects: overlay.objects,
 					});
 					renderer.drawAll(offCtx, world, true, alpha);
-					setup.drawWorldOverlay?.(offCtx, alpha);
 					drawDebugOverlay(offCtx, world, overlay);
 					ctx.setTransform(1, 0, 0, 1, 0, 0);
 					ctx.imageSmoothingEnabled = false;
@@ -331,6 +335,16 @@ export function useMapRenderer({
 						cam.offsetY * dpr
 					);
 					ctx.drawImage(offscreen, 0, 0);
+					if (setup.drawScreenOverlay) {
+						// switch to CSS-pixel space (DPR only) so overlays render
+						// crisp without the camera's nearest-neighbor upscale.
+						ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+						ctx.imageSmoothingEnabled = true;
+						setup.drawScreenOverlay(ctx, alpha, (x, y) => [
+							x * cam.scale + cam.offsetX,
+							y * cam.scale + cam.offsetY,
+						]);
+					}
 
 					// push the live camera into the overlay state, but only when
 					// the user-visible (rounded) value actually changes, to avoid
