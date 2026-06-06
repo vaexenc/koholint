@@ -26,7 +26,7 @@ import {
 	type WheelEvent as ReactWheelEvent,
 } from "react";
 
-const INITIAL_SCALE = 2;
+const INITIAL_SCALE = 3;
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 16;
 const ZOOM_STEP = 1.15;
@@ -64,6 +64,10 @@ export type MapRendererSetup = {
 	// geometric center (e.g. a spawn area). does not move with the simulation —
 	// the follow target takes over once follow is enabled.
 	initialFocus?: {x: number; y: number} | null;
+	// per-frame world-space overlay, drawn into the same offscreen as the map
+	// (after characters, before debug) so it shares the camera transform and
+	// pixel scaling. used for the movement hint.
+	drawWorldOverlay?: (ctx: CanvasRenderingContext2D, alpha: number) => void;
 	dispose?: () => void;
 };
 
@@ -313,6 +317,7 @@ export function useMapRenderer({
 						debugObjects: overlay.objects,
 					});
 					renderer.drawAll(offCtx, world, true, alpha);
+					setup.drawWorldOverlay?.(offCtx, alpha);
 					drawDebugOverlay(offCtx, world, overlay);
 					ctx.setTransform(1, 0, 0, 1, 0, 0);
 					ctx.imageSmoothingEnabled = false;

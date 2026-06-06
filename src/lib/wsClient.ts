@@ -1,6 +1,7 @@
 import {stepCharacter, type BasicCharacter} from "@/game/character";
 import {NEUTRAL_INPUT, type CharacterInput, type Direction} from "@/game/types";
 import type {World} from "@/game/world";
+import {getStored, setStored} from "@/lib/safeStorage";
 import {
 	decodeSnapshot,
 	type ChatMessage,
@@ -22,6 +23,11 @@ export const RESUME_TOKEN_KEY = "koholint:resumeToken";
 
 // 1->2->4->8s cap per HANDOFF reconnect spec. last entry repeats forever.
 const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000, 8000];
+// ws close code the server uses for protocol/validation failures, including a
+// rejected hello name. reconnecting re-sends the same hello and would be
+// rejected identically, so we treat it as terminal and let the caller decide
+// what to do (e.g. surface the error and re-connect once the name is fixed).
+const CLOSE_PROTOCOL = 1008;
 // drop inputs older than ~30s so a long disconnect doesn't shower the server
 // with stale frames on resume. matches MAX_INPUT_AGE_TICKS on the server.
 const INPUT_MAX_AGE_TICKS = 30 * 30;
@@ -171,7 +177,7 @@ export class WsClient {
 	private onOpen(): void {
 		const profile = this.opts.getProfile();
 		const adminToken = this.opts.getAdminToken?.();
-		const resumeToken = readResumeToken();
+		const resumeToken = getStored(RESUME_TOKEN_KEY);
 		const hello: ClientMessage = {
 			type: "hello",
 			name: profile.name,
@@ -219,7 +225,7 @@ export class WsClient {
 	}
 
 	private onWelcome(msg: ServerWelcome): void {
-		persistResumeToken(msg.resumeToken);
+		setStored(RESUME_TOKEN_KEY, msg.resumeToken);
 		this.hasEverConnected = true;
 		this.reconnectAttempt = 0;
 		this.lastServerAck = msg.serverTick;
@@ -233,7 +239,7 @@ export class WsClient {
 
 	private onClose(ev: CloseEvent): void {
 		this.socket = null;
-		if (this.intentionalClose || ev.code === 1000) {
+		if (this.intentionalClose || ev.code === 1000 || ev.code === CLOSE_PROTOCOL) {
 			this.setStatus("closed");
 			return;
 		}
@@ -265,22 +271,6 @@ function parseServerMessage(raw: string): ServerMessage | null {
 		return null;
 	} catch {
 		return null;
-	}
-}
-
-function readResumeToken(): string | null {
-	try {
-		return window.localStorage.getItem(RESUME_TOKEN_KEY);
-	} catch {
-		return null;
-	}
-}
-
-function persistResumeToken(token: string): void {
-	try {
-		window.localStorage.setItem(RESUME_TOKEN_KEY, token);
-	} catch {
-		// storage may be unavailable; skip silently.
 	}
 }
 

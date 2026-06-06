@@ -1,4 +1,5 @@
 import {AVATARS} from "@/components/avatar-picker/registry";
+import {LoadingScreen} from "@/components/LoadingScreen";
 import {SettingsDialog} from "@/components/SettingsDialog";
 import {Button} from "@/components/ui/button";
 import {
@@ -172,8 +173,8 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	return (
 		<div className="fixed inset-0 overflow-hidden bg-neutral-900 font-mono">
 			<canvas {...canvasProps} />
+			{state.status === "loading" && <LoadingScreen />}
 			<div className="absolute top-2 left-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
-				{state.status === "loading" && <p>loading map…</p>}
 				{state.status === "error" && (
 					<pre className="whitespace-pre-wrap text-red-400">{state.message}</pre>
 				)}

@@ -39,6 +39,9 @@ function isEditableTarget(target: EventTarget | null): boolean {
 // dragging the DOM lib into its type-check.
 export class KeyboardInputProvider implements InputProvider {
 	private pressed = new Set<string>();
+	// every bound key pressed at least once while capturing. cumulative, never
+	// cleared — read by the movement hint to know which keys the player has tried.
+	private seen = new Set<string>();
 	private bound: KeyBindings;
 	private boundKeys: Set<string>;
 	private target: Window;
@@ -57,6 +60,12 @@ export class KeyboardInputProvider implements InputProvider {
 		target.addEventListener("keydown", this.onKeyDown);
 		target.addEventListener("keyup", this.onKeyUp);
 		target.addEventListener("blur", this.onBlur);
+	}
+
+	// the bound keys pressed at least once. read live each frame; the consumer
+	// decides what "learned" means rather than baking that policy in here.
+	getSeenKeys(): ReadonlySet<string> {
+		return this.seen;
 	}
 
 	sample(): CharacterInput {
@@ -97,6 +106,7 @@ export class KeyboardInputProvider implements InputProvider {
 		const k = e.key.toLowerCase();
 		if (!this.boundKeys.has(k)) return;
 		this.pressed.add(k);
+		this.seen.add(k);
 		// stop arrow keys from scrolling the page or stealing caret focus
 		// from overlays.
 		e.preventDefault();
