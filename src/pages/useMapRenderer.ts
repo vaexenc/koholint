@@ -40,6 +40,22 @@ const MAX_FRAME_DT = 0.1;
 // as a click (teleport) rather than a drag (pan).
 const CLICK_MAX_TRAVEL_PX = 4;
 
+// constrain a camera offset (one axis) so the scaled map always covers the
+// viewport, hiding any out-of-map area. when the map is smaller than the
+// viewport on this axis it can't cover it, so center it instead.
+function clampCameraOffset(
+	offset: number,
+	scale: number,
+	mapPixels: number,
+	viewport: number
+): number {
+	const scaled = mapPixels * scale;
+	if (scaled <= viewport) return (viewport - scaled) / 2;
+	// offset 0 aligns the map's near edge to the viewport's; the most negative
+	// offset aligns the far edges. anything outside this range exposes the void.
+	return Math.min(0, Math.max(viewport - scaled, offset));
+}
+
 export type MapLoadState =
 	| {status: "loading"}
 	| {status: "ok"; map: TiledMap}
@@ -148,6 +164,7 @@ export function useMapRenderer({
 		targetOffsetY: 0,
 	});
 	const dragRef = useRef<Drag | null>(null);
+	const mapSizeRef = useRef<{width: number; height: number} | null>(null);
 	const mouseRef = useRef<{x: number; y: number} | null>(null);
 	const displayedZoomRef = useRef(INITIAL_SCALE);
 	const displayedCursorRef = useRef<{x: number; y: number} | null>(null);
@@ -240,18 +257,29 @@ export function useMapRenderer({
 				setupRef.current = setup;
 				worldRef.current = world;
 				mapRef.current = map;
+				mapSizeRef.current = {width: mapPixelWidth, height: mapPixelHeight};
 
 				// center the viewport on first render — on the requested focus
 				// point if init supplied one, otherwise on the map's geometric
 				// center. set current and target to the same value so the spring
 				// has nothing to animate at load.
 				const focus = setup.initialFocus;
-				const initialOffsetX = focus
-					? window.innerWidth / 2 - focus.x * INITIAL_SCALE
-					: (window.innerWidth - mapPixelWidth * INITIAL_SCALE) / 2;
-				const initialOffsetY = focus
-					? window.innerHeight / 2 - focus.y * INITIAL_SCALE
-					: (window.innerHeight - mapPixelHeight * INITIAL_SCALE) / 2;
+				const initialOffsetX = clampCameraOffset(
+					focus
+						? window.innerWidth / 2 - focus.x * INITIAL_SCALE
+						: (window.innerWidth - mapPixelWidth * INITIAL_SCALE) / 2,
+					INITIAL_SCALE,
+					mapPixelWidth,
+					window.innerWidth
+				);
+				const initialOffsetY = clampCameraOffset(
+					focus
+						? window.innerHeight / 2 - focus.y * INITIAL_SCALE
+						: (window.innerHeight - mapPixelHeight * INITIAL_SCALE) / 2,
+					INITIAL_SCALE,
+					mapPixelHeight,
+					window.innerHeight
+				);
 				cameraRef.current = {
 					scale: INITIAL_SCALE,
 					offsetX: initialOffsetX,
@@ -295,6 +323,21 @@ export function useMapRenderer({
 						cam.targetOffsetY = window.innerHeight / 2 - centerY * cam.targetScale;
 					}
 
+					// keep the target inside the map bounds (the viewport may have
+					// resized, or follow/zoom may have pushed it past an edge).
+					cam.targetOffsetX = clampCameraOffset(
+						cam.targetOffsetX,
+						cam.targetScale,
+						mapPixelWidth,
+						window.innerWidth
+					);
+					cam.targetOffsetY = clampCameraOffset(
+						cam.targetOffsetY,
+						cam.targetScale,
+						mapPixelHeight,
+						window.innerHeight
+					);
+
 					if (dt > 0) {
 						const k = 1 - Math.exp(-CAMERA_SMOOTHING * dt);
 						cam.scale += (cam.targetScale - cam.scale) * k;
@@ -309,6 +352,22 @@ export function useMapRenderer({
 						if (Math.abs(cam.targetOffsetY - cam.offsetY) < 0.25)
 							cam.offsetY = cam.targetOffsetY;
 					}
+
+					// the spring tracks a clamped target, but its in-flight scale can
+					// momentarily expose the void; clamp the live offset against the
+					// live scale so an out-of-map area is never actually drawn.
+					cam.offsetX = clampCameraOffset(
+						cam.offsetX,
+						cam.scale,
+						mapPixelWidth,
+						window.innerWidth
+					);
+					cam.offsetY = clampCameraOffset(
+						cam.offsetY,
+						cam.scale,
+						mapPixelHeight,
+						window.innerHeight
+					);
 
 					offCtx.setTransform(1, 0, 0, 1, 0, 0);
 					offCtx.clearRect(0, 0, mapPixelWidth, mapPixelHeight);
@@ -389,6 +448,7 @@ export function useMapRenderer({
 			setupRef.current = null;
 			worldRef.current = null;
 			mapRef.current = null;
+			mapSizeRef.current = null;
 		};
 	}, [mapUrl]);
 
@@ -415,9 +475,14 @@ export function useMapRenderer({
 		mouseRef.current = {x: e.clientX, y: e.clientY};
 		const drag = dragRef.current;
 		if (drag && drag.pointerId === e.pointerId) {
-			const nextX = drag.startOffsetX + (e.clientX - drag.startX);
-			const nextY = drag.startOffsetY + (e.clientY - drag.startY);
 			const cam = cameraRef.current;
+			const size = mapSizeRef.current;
+			let nextX = drag.startOffsetX + (e.clientX - drag.startX);
+			let nextY = drag.startOffsetY + (e.clientY - drag.startY);
+			if (size) {
+				nextX = clampCameraOffset(nextX, cam.scale, size.width, window.innerWidth);
+				nextY = clampCameraOffset(nextY, cam.scale, size.height, window.innerHeight);
+			}
 			// drag is direct manipulation: write current and target together
 			// so the map tracks the cursor 1:1 with no smoothing lag.
 			cam.offsetX = nextX;
@@ -459,8 +524,15 @@ export function useMapRenderer({
 		const worldX = (e.clientX - cam.targetOffsetX) / cam.targetScale;
 		const worldY = (e.clientY - cam.targetOffsetY) / cam.targetScale;
 		cam.targetScale = newScale;
-		cam.targetOffsetX = e.clientX - worldX * newScale;
-		cam.targetOffsetY = e.clientY - worldY * newScale;
+		const size = mapSizeRef.current;
+		const offsetX = e.clientX - worldX * newScale;
+		const offsetY = e.clientY - worldY * newScale;
+		cam.targetOffsetX = size
+			? clampCameraOffset(offsetX, newScale, size.width, window.innerWidth)
+			: offsetX;
+		cam.targetOffsetY = size
+			? clampCameraOffset(offsetY, newScale, size.height, window.innerHeight)
+			: offsetY;
 	};
 
 	return {
