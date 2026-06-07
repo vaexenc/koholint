@@ -3,6 +3,7 @@ import {NEUTRAL_INPUT, type CharacterInput, type Direction} from "@/game/types";
 import type {World} from "@/game/world";
 import {getStored, setStored} from "@/lib/safeStorage";
 import {
+	decodeAnimByteMs,
 	decodeSnapshot,
 	type ChatMessage,
 	type ClientMessage,
@@ -298,7 +299,7 @@ export function replayLocalInputs(
 	// exactly as we do for position. without this the replay re-accumulates
 	// animTimeMs for ticks that forward-stepping already counted, so the phase
 	// double-counts and the walk animation lurches every snapshot.
-	character.animTimeMs = authoritative.animByte * 16;
+	character.animTimeMs = decodeAnimByteMs(authoritative.animByte);
 	character.jump = null;
 	character.teleport = null;
 	character.jumpOffsetY = 0;

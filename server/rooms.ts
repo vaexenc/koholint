@@ -11,6 +11,7 @@ import {buildTerrainGrid} from "@/game/terrain";
 import {NEUTRAL_INPUT, type CharacterInput} from "@/game/types";
 import {World} from "@/game/world";
 import {
+	encodeAnimByte,
 	encodeSnapshot,
 	type ChatMessage,
 	type CoalescedInput,
@@ -287,7 +288,7 @@ export class Room {
 				facing: s.character.facing,
 				walking: s.character.walking,
 				jumping: s.character.jump !== null || s.character.teleport !== null,
-				animByte: Math.min(255, Math.round(s.character.animTimeMs / 16)) & 0xff,
+				animByte: encodeAnimByte(s.character.animTimeMs),
 				jumpOffset: s.character.jumpOffsetY,
 			});
 		}

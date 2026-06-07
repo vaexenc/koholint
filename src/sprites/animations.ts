@@ -64,6 +64,12 @@ export const CLASSIC_CHARACTER_ANIMATIONS: Record<ClassicCharacterAnimationName,
 		},
 	};
 
+// full walk-cycle duration. every walk animation above is two frames held for
+// WALK_FRAME_MS each, so the walk phase repeats on this period. exported so the
+// simulation can keep its phase accumulator bounded to a whole number of cycles
+// (an unbounded accumulator overflows the snapshot's one-byte phase encoding).
+export const WALK_CYCLE_MS = WALK_FRAME_MS * 2;
+
 export type ResolvedSpriteAnimationFrame = {
 	sprite: SpriteSheet[number];
 	mirrorX: boolean;

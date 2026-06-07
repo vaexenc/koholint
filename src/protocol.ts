@@ -151,6 +151,19 @@ export type ServerMessage =
 export const SNAPSHOT_HEADER_BYTES = 4 + 4 + 2;
 export const SNAPSHOT_PLAYER_BYTES = 2 + 4 + 4 + 1 + 1 + 1;
 
+// walk-phase wire encoding. the simulation keeps animTimeMs bounded so the byte
+// never saturates; encodeAnimByte/decodeAnimByteMs are the one home for the
+// contract so the conversion can't drift between server and clients.
+export const ANIM_BYTE_SCALE_MS = 16;
+export const ANIM_BYTE_MAX = 255;
+
+// the min is a guard, not a live path: animTimeMs is bounded upstream so the
+// rounded byte stays under ANIM_BYTE_MAX in normal operation.
+export const encodeAnimByte = (animTimeMs: number): number =>
+	Math.min(ANIM_BYTE_MAX, Math.round(animTimeMs / ANIM_BYTE_SCALE_MS));
+
+export const decodeAnimByteMs = (animByte: number): number => animByte * ANIM_BYTE_SCALE_MS;
+
 export const DIR_DOWN = 0;
 export const DIR_LEFT = 1;
 export const DIR_UP = 2;

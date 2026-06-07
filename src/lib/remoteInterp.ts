@@ -1,6 +1,6 @@
 import {lerp, type BasicCharacter} from "@/game";
 import {type Direction} from "@/game/types";
-import {type ConnId, type Profile, type SnapshotPose} from "@/protocol";
+import {decodeAnimByteMs, type ConnId, type Profile, type SnapshotPose} from "@/protocol";
 
 // render remote players this far behind the latest snapshot so we always have
 // two frames bracketing the render time. ~1.5x the 66ms snapshot interval.
@@ -66,10 +66,10 @@ export function applyRemoteInterp(remote: RemoteEntry, renderAt: number): void {
 	char.y = char.prevY = lerp(lo.y, hi.y, t);
 	// advance the walk phase smoothly across the segment instead of snapping it
 	// at each snapshot. animByte climbs monotonically while walking; a drop means
-	// it reset on stop (or saturated at 255), so we hold the newer value rather
-	// than interpolate backward through it.
+	// it reset on stop (or wrapped at the end of a walk cycle), so we hold the
+	// newer value rather than interpolate backward through it.
 	const animByte = hi.animByte >= lo.animByte ? lerp(lo.animByte, hi.animByte, t) : hi.animByte;
-	char.animTimeMs = animByte * 16;
+	char.animTimeMs = decodeAnimByteMs(animByte);
 	// lerp the hop arc too so remotes rise/fall smoothly over a hole.
 	char.jumpOffsetY = char.prevJumpOffsetY = lerp(lo.jumpOffset, hi.jumpOffset, t);
 	// facing/walking come from the sample we're moving toward (the nearest

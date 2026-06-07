@@ -1,3 +1,5 @@
+import {ANIM_BYTE_MAX, ANIM_BYTE_SCALE_MS} from "@/protocol";
+import {WALK_CYCLE_MS} from "@/sprites/animations";
 import type {SpriteAsset, SpritePalette} from "@/types";
 import {
 	aabbOverlapsCliff,
@@ -21,6 +23,16 @@ import {inputHasMovement, type CharacterInput, type Direction, type EntityId} fr
 export const DEFAULT_COLLISION_BOX = {x: 2, y: 8, width: 12, height: 8} as const;
 
 export const DEFAULT_CHARACTER_SPEED = 64;
+
+// keep the walk-phase accumulator bounded so the snapshot's one-byte phase
+// encoding never saturates; left unbounded it pins the byte after ~4s of
+// continuous walking, which freezes every observer's walk animation on a single
+// frame. wrap on a whole walk cycle so the wrap is seamless (the pose at the
+// wrap point is the pose at zero), and derive the largest whole number of cycles
+// that still fits under the byte ceiling so any future timing change can't
+// silently reintroduce the saturation.
+const ANIM_PHASE_WRAP_MS =
+	Math.floor((ANIM_BYTE_MAX * ANIM_BYTE_SCALE_MS) / WALK_CYCLE_MS) * WALK_CYCLE_MS;
 
 // todo: comment
 export const DEFAULT_CORNER_SLIDE_PX = 7;
@@ -195,7 +207,7 @@ export function stepCharacter(
 		char.x = endX;
 		char.y = endY;
 		char.walking = true;
-		char.animTimeMs += dtSec * 1000;
+		char.animTimeMs = (char.animTimeMs + dtSec * 1000) % ANIM_PHASE_WRAP_MS;
 		if (teleporters) tryEnterTeleporter(char, before, teleporters);
 	} else {
 		char.walking = false;
