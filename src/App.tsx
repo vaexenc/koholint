@@ -30,7 +30,7 @@ const offlineRoute = createRoute({
 const testMapRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/test",
-	component: () => <MapPage mapUrl="/maps/test.json" />,
+	component: () => <MapPage mapUrl="/maps/test-map.json" />,
 });
 
 const avatarRoute = createRoute({

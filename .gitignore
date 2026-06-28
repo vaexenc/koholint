@@ -28,4 +28,5 @@ dist-ssr
 # Custom
 AGENTS.md
 CLAUDE.md
+public/maps/lamap.png
 server/data/

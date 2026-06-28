@@ -15,7 +15,7 @@ import {
 import {buildAnimationTable} from "@/tiled/animation";
 import {browserMapLoaderEnv} from "@/tiled/browserEnv";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
-import {renderTiledMap} from "@/tiled/renderer";
+import {buildMapRenderCache, drawMapCache, type MapRenderCache} from "@/tiled/renderer";
 import {loadTilesets} from "@/tiled/tileset";
 import {
 	useEffect,
@@ -164,6 +164,17 @@ export function useMapRenderer({
 		targetOffsetY: 0,
 	});
 	const dragRef = useRef<Drag | null>(null);
+	// the world point under the cursor that an in-flight wheel zoom keeps pinned
+	// in place, plus the screen point it's pinned to. null when not zooming.
+	const zoomAnchorRef = useRef<{
+		worldX: number;
+		worldY: number;
+		screenX: number;
+		screenY: number;
+	} | null>(null);
+	// world-space point the follow camera eases toward, so a zoom stays centered
+	// on the player at every scale. null when not following.
+	const followFocusRef = useRef<{x: number; y: number} | null>(null);
 	const mapSizeRef = useRef<{width: number; height: number} | null>(null);
 	const mouseRef = useRef<{x: number; y: number} | null>(null);
 	const displayedZoomRef = useRef(INITIAL_SCALE);
@@ -299,6 +310,21 @@ export function useMapRenderer({
 				const offCtx = offscreen.getContext("2d");
 				if (!offCtx) throw new Error("failed to create offscreen 2d context");
 
+				// the static map is rasterized once and reused every frame; only
+				// animated cells and characters are redrawn. rebuilt only when the
+				// object-debug overlay toggles, since that bakes outlines into the
+				// static layers.
+				const buildCache = (debugObjects: boolean): MapRenderCache =>
+					buildMapRenderCache(
+						{map, tilesets, animations, timeMs: 0, debugObjects},
+						mapPixelWidth,
+						mapPixelHeight
+					);
+				let cacheDebugObjects = (
+					debugRef.current ? DEBUG_OVERLAY_ALL : DEFAULT_DEBUG_OVERLAY
+				).objects;
+				let mapCache = buildCache(cacheDebugObjects);
+
 				const startTime = performance.now();
 				let lastFrameTime = 0;
 				const renderFrame = (now: number) => {
@@ -314,13 +340,17 @@ export function useMapRenderer({
 					// frame's freshly stepped follow target with zero extra latency.
 					const alpha = stepRef.current?.(dt * 1000) ?? 0;
 					const followTarget = followRef.current ? setup.follow?.() ?? null : null;
+					// the world-space point the follow camera wants centered this
+					// frame; the offset is derived from it below once the live scale
+					// is known. null when not following.
+					let followCenter: {x: number; y: number} | null = null;
 					if (followTarget) {
 						const interpX = lerp(followTarget.prevX, followTarget.x, alpha);
 						const interpY = lerp(followTarget.prevY, followTarget.y, alpha);
-						const centerX = interpX + followTarget.spriteWidth / 2;
-						const centerY = interpY + followTarget.spriteHeight / 2;
-						cam.targetOffsetX = window.innerWidth / 2 - centerX * cam.targetScale;
-						cam.targetOffsetY = window.innerHeight / 2 - centerY * cam.targetScale;
+						followCenter = {
+							x: interpX + followTarget.spriteWidth / 2,
+							y: interpY + followTarget.spriteHeight / 2,
+						};
 					}
 
 					// keep the target inside the map bounds (the viewport may have
@@ -341,16 +371,58 @@ export function useMapRenderer({
 					if (dt > 0) {
 						const k = 1 - Math.exp(-CAMERA_SMOOTHING * dt);
 						cam.scale += (cam.targetScale - cam.scale) * k;
-						cam.offsetX += (cam.targetOffsetX - cam.offsetX) * k;
-						cam.offsetY += (cam.targetOffsetY - cam.offsetY) * k;
 						// snap once we're within sub-pixel / sub-percent distance so
 						// the spring doesn't tail off into floating-point noise.
 						if (Math.abs(cam.targetScale - cam.scale) < cam.targetScale * 0.0005)
 							cam.scale = cam.targetScale;
-						if (Math.abs(cam.targetOffsetX - cam.offsetX) < 0.25)
-							cam.offsetX = cam.targetOffsetX;
-						if (Math.abs(cam.targetOffsetY - cam.offsetY) < 0.25)
-							cam.offsetY = cam.targetOffsetY;
+
+						if (followCenter) {
+							// a zoom while following stays centered on the player, so a
+							// pending cursor anchor is moot.
+							zoomAnchorRef.current = null;
+							// ease the camera's focus toward the player in WORLD space,
+							// then derive the offset from the live scale so the player
+							// stays centered at every in-between scale. easing the screen
+							// offset toward a target built from targetScale instead leaves
+							// the player off-center mid-zoom and slides it back when the
+							// spring settles — the post-zoom shift.
+							const focus = followFocusRef.current ?? {
+								x: (window.innerWidth / 2 - cam.offsetX) / cam.scale,
+								y: (window.innerHeight / 2 - cam.offsetY) / cam.scale,
+							};
+							focus.x += (followCenter.x - focus.x) * k;
+							focus.y += (followCenter.y - focus.y) * k;
+							followFocusRef.current = focus;
+							cam.offsetX = window.innerWidth / 2 - focus.x * cam.scale;
+							cam.offsetY = window.innerHeight / 2 - focus.y * cam.scale;
+							cam.targetOffsetX = window.innerWidth / 2 - focus.x * cam.targetScale;
+							cam.targetOffsetY = window.innerHeight / 2 - focus.y * cam.targetScale;
+						} else {
+							// not following: forget the focus so re-enabling follow eases
+							// from wherever the camera currently looks rather than a stale
+							// point.
+							followFocusRef.current = null;
+							const anchor = zoomAnchorRef.current;
+							if (anchor) {
+								// derive the offset from the live (springing) scale so the
+								// anchored world point stays pinned under the cursor at every
+								// in-between scale. springing the offset independently instead
+								// lets the focal point drift mid-zoom and snap back when the
+								// spring settles — the post-zoom shift.
+								cam.offsetX = anchor.screenX - anchor.worldX * cam.scale;
+								cam.offsetY = anchor.screenY - anchor.worldY * cam.scale;
+								cam.targetOffsetX = anchor.screenX - anchor.worldX * cam.targetScale;
+								cam.targetOffsetY = anchor.screenY - anchor.worldY * cam.targetScale;
+								if (cam.scale === cam.targetScale) zoomAnchorRef.current = null;
+							} else {
+								cam.offsetX += (cam.targetOffsetX - cam.offsetX) * k;
+								cam.offsetY += (cam.targetOffsetY - cam.offsetY) * k;
+								if (Math.abs(cam.targetOffsetX - cam.offsetX) < 0.25)
+									cam.offsetX = cam.targetOffsetX;
+								if (Math.abs(cam.targetOffsetY - cam.offsetY) < 0.25)
+									cam.offsetY = cam.targetOffsetY;
+							}
+						}
 					}
 
 					// the spring tracks a clamped target, but its in-flight scale can
@@ -370,16 +442,21 @@ export function useMapRenderer({
 					);
 
 					offCtx.setTransform(1, 0, 0, 1, 0, 0);
-					offCtx.clearRect(0, 0, mapPixelWidth, mapPixelHeight);
 					const elapsedMs = now - startTime;
 					const overlay = debugRef.current ? DEBUG_OVERLAY_ALL : DEFAULT_DEBUG_OVERLAY;
-					renderTiledMap(offCtx, {
-						map,
+					if (overlay.objects !== cacheDebugObjects) {
+						cacheDebugObjects = overlay.objects;
+						mapCache = buildCache(cacheDebugObjects);
+					}
+					drawMapCache(
+						offCtx,
+						mapCache,
 						tilesets,
 						animations,
-						timeMs: elapsedMs,
-						debugObjects: overlay.objects,
-					});
+						elapsedMs,
+						mapPixelWidth,
+						mapPixelHeight
+					);
 					renderer.drawAll(offCtx, world, true, alpha);
 					drawDebugOverlay(offCtx, world, overlay);
 					ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -459,6 +536,8 @@ export function useMapRenderer({
 		cam.targetScale = cam.scale;
 		cam.targetOffsetX = cam.offsetX;
 		cam.targetOffsetY = cam.offsetY;
+		// end any in-flight zoom so its offset lock doesn't fight the drag.
+		zoomAnchorRef.current = null;
 		dragRef.current = {
 			pointerId: e.pointerId,
 			button: e.button,
@@ -518,15 +597,28 @@ export function useMapRenderer({
 		const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
 		const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, cam.targetScale * factor));
 		if (newScale === cam.targetScale) return;
-		// pivot against the target (intended) camera, not the live one. this
-		// keeps the focal point stable across rapid successive wheel events
-		// while the spring is still mid-flight from the previous tick.
-		const worldX = (e.clientX - cam.targetOffsetX) / cam.targetScale;
-		const worldY = (e.clientY - cam.targetOffsetY) / cam.targetScale;
 		cam.targetScale = newScale;
+		// following keeps the camera centered on the player, so just change the
+		// zoom level and let the follow logic place the offset.
+		if (followRef.current) {
+			zoomAnchorRef.current = null;
+			return;
+		}
+		// anchor the zoom to the world point under the cursor on the LIVE camera —
+		// what the user actually sees there. renderFrame pins this point across
+		// every in-between scale, so the focal point neither drifts during the
+		// zoom nor snaps when it settles. recapturing each tick is stable because
+		// the live offset already keeps this same point under the cursor.
+		const anchor = {
+			worldX: (e.clientX - cam.offsetX) / cam.scale,
+			worldY: (e.clientY - cam.offsetY) / cam.scale,
+			screenX: e.clientX,
+			screenY: e.clientY,
+		};
+		zoomAnchorRef.current = anchor;
 		const size = mapSizeRef.current;
-		const offsetX = e.clientX - worldX * newScale;
-		const offsetY = e.clientY - worldY * newScale;
+		const offsetX = anchor.screenX - anchor.worldX * newScale;
+		const offsetY = anchor.screenY - anchor.worldY * newScale;
 		cam.targetOffsetX = size
 			? clampCameraOffset(offsetX, newScale, size.width, window.innerWidth)
 			: offsetX;

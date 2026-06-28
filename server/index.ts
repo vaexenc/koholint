@@ -15,7 +15,7 @@ import {CLOSE_SHUTDOWN, WsServer} from "./ws";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? "127.0.0.1";
-const MAP_FILE = process.env.MAP_FILE ?? "public/maps/overworld.json";
+const MAP_FILE = "public/maps/overworld-map.json";
 const DATA_DIR = process.env.DATA_DIR ?? "server/data";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? null;
 const DIST_DIR = "dist";

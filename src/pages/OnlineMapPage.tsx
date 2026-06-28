@@ -23,7 +23,7 @@ import {paletteAccent} from "@/sprites/paletteAccent";
 import {ShieldCheck} from "lucide-react";
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 
-const DEFAULT_MAP_URL = "/maps/overworld.json";
+const DEFAULT_MAP_URL = "/maps/overworld-map.json";
 const ADMIN_TOKEN_KEY = "koholint:admin";
 const LEARNED_MOVEMENT_KEY = "koholint:learnedMovement";
 const CHAT_BUFFER_MAX = 500;

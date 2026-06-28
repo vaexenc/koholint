@@ -28,7 +28,7 @@ function resolvePaletteSwap(paletteId: string | null) {
 	return PALETTES.find((p) => p.id === paletteId)?.palette;
 }
 
-const DEFAULT_MAP_URL = "/maps/overworld.json";
+const DEFAULT_MAP_URL = "/maps/overworld-map.json";
 const PLAYER_CHARACTER_ID = "player-link";
 const MIN_TICK_RATE_HZ = 5;
 const MAX_TICK_RATE_HZ = 120;

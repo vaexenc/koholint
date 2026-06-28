@@ -1,5 +1,5 @@
 import {ITiledMap} from "@workadventure/tiled-map-type-guard";
-import {expandExternalTilesets, type TilesetLoaderEnv} from "./externalTileset";
+import {expandExternalTilesets} from "./externalTileset";
 
 export type TiledMap = ITiledMap & {
 	width: number;
@@ -8,14 +8,14 @@ export type TiledMap = ITiledMap & {
 	tileheight: number;
 };
 
-// shared IO surface for map loading. fetchJson is map-specific; tileset
-// expansion delegates to a TilesetLoaderEnv (fetchText + parseXml + resolveUrl).
+// shared IO surface for map loading: fetchJson pulls a map or external tileset
+// json, resolveUrl resolves a tileset/image reference relative to its parent.
 // the env is required: browser callers pass browserMapLoaderEnv (./browserEnv),
-// the server passes nodeMapLoaderEnv. keeping the browser impl out of this
-// module lets it type-check under the DOM-free server config.
+// the server passes nodeMapLoaderEnv. keeping the platform impls out of this
+// module lets it type-check under both the browser and the node server config.
 export type MapLoaderEnv = {
 	readonly fetchJson: (url: string) => Promise<unknown>;
-	readonly tilesetEnv: TilesetLoaderEnv;
+	readonly resolveUrl: (base: string, relative: string) => string;
 };
 
 export class TiledMapValidationError extends Error {
@@ -40,7 +40,7 @@ export function parseTiledMap(data: unknown, source?: string): TiledMap {
 
 export async function loadTiledMap(url: string, env: MapLoaderEnv): Promise<TiledMap> {
 	const json = await env.fetchJson(url);
-	const expanded = await expandExternalTilesets(json, url, env.tilesetEnv);
+	const expanded = await expandExternalTilesets(json, url, env);
 	return parseTiledMap(expanded, url);
 }
 
