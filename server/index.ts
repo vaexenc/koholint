@@ -10,6 +10,7 @@ import {nodeMapLoaderEnv} from "./loaderEnv";
 import {ResumeStore} from "./resume";
 import {collectSpawnRegions} from "@/game/spawn";
 import {Room} from "./rooms";
+import {checkName} from "./profanity";
 import {CLOSE_SHUTDOWN, WsServer} from "./ws";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -38,6 +39,14 @@ async function main(): Promise<void> {
 	const room = new Room({map, spawns});
 	room.start();
 	const app = new Hono();
+	// lets the settings UI surface obscenity/reserved-name rejections inline
+	// before save, without shipping the obscenity package to the client.
+	app.post("/api/validate-name", async (c) => {
+		const body = await c.req.json().catch(() => null);
+		const name = body && typeof body.name === "string" ? body.name : "";
+		const result = checkName(name, false);
+		return c.json(result.ok ? {ok: true} : {ok: false, reason: result.reason});
+	});
 	if (existsSync(path.resolve(DIST_DIR))) {
 		log.info(`boot: serving static assets from ${DIST_DIR}/`);
 		app.use("/*", serveStatic({root: `./${DIST_DIR}`}));

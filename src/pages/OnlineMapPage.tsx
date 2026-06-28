@@ -1,16 +1,15 @@
-import {AVATARS} from "@/components/avatar-picker/registry";
 import {DEFAULT_CHAT_SETTINGS, type ChatSettings} from "@/components/Chat";
 import ChatPanel, {type PlayerListEntry} from "@/components/ChatPanel";
-import {JoinGate} from "@/components/JoinGate";
 import {LoadingScreen} from "@/components/LoadingScreen";
 import {SettingsDialog} from "@/components/SettingsDialog";
 import {Button} from "@/components/ui/button";
 import {OnlineGame} from "@/lib/onlineGame";
+import {randomProfile} from "@/lib/randomProfile";
 import {getStored, setStored} from "@/lib/safeStorage";
 import {useLatestRef} from "@/lib/useLatestRef";
 import {useLocalStorage} from "@/lib/useLocalStorage";
 import {validateName} from "@/lib/validateName";
-import {RESUME_TOKEN_KEY, WsClient, type ConnectionStatus} from "@/lib/wsClient";
+import {WsClient, type ConnectionStatus} from "@/lib/wsClient";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
 import {
 	type ChatMessage,
@@ -31,13 +30,6 @@ const CHAT_BUFFER_MAX = 500;
 
 function readAdminToken(): string | undefined {
 	return getStored(ADMIN_TOKEN_KEY) || undefined;
-}
-
-// a resume token means this browser has connected before: a returning player.
-// they skip the join gate and auto-connect with their saved profile; only
-// brand-new players see the avatar picker + Join button.
-function hasResumeToken(): boolean {
-	return Boolean(getStored(RESUME_TOKEN_KEY));
 }
 
 function buildWsUrl(): string {
@@ -71,24 +63,16 @@ function selfPlayerListEntry(connId: ConnId, profile: Profile): PlayerListEntry 
 
 // the one screen the player sees:
 //   preMap → loading (map fetch in flight)
-//   autoJoining → loading (returning player, ws hello in flight)
-//   gate → JoinGate (first-run, or fallback after a rejected hello)
+//   joining → loading (ws hello in flight; players auto-join with a random or
+//             saved identity, so there's no first-run picker to show)
 //   joined → game HUD + chat panel
 // a map-load error overlays everything below.
-type JoinPhase =
-	| {kind: "preMap"}
-	| {kind: "autoJoining"}
-	| {kind: "gate"; joining: boolean}
-	| {kind: "joined"};
+type JoinPhase = {kind: "preMap"} | {kind: "joining"} | {kind: "joined"};
 
 type MapPageProps = {mapUrl?: string};
 
 function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
-	const [profile, setProfile] = useLocalStorage<Profile>("koholint:profile", {
-		name: "",
-		avatarId: AVATARS[0].id,
-		paletteId: null,
-	});
+	const [profile, setProfile] = useLocalStorage<Profile>("koholint:profile", randomProfile);
 	const [follow, setFollow] = useLocalStorage("koholint:online.follow", true);
 	const [chatSettings, setChatSettings] = useLocalStorage<ChatSettings>(
 		"koholint:chat.settings",
@@ -187,16 +171,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		});
 		wsRef.current = ws;
 		ws.setEvents({
-			onStatus: (s) => {
-				setStatus(s);
-				// a terminal close (e.g. the server rejecting the hello name)
-				// ends an in-flight join; surface the gate so the player can
-				// fix the name and try again.
-				if (s !== "closed") return;
-				const cur = phaseRef.current;
-				if (cur.kind === "autoJoining" || (cur.kind === "gate" && cur.joining))
-					setPhase({kind: "gate", joining: false});
-			},
+			onStatus: setStatus,
 			onWelcome: handleWelcome,
 			onSnapshot: (snap) => {
 				const ws = wsRef.current;
@@ -209,31 +184,25 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 			onLeave: handleLeave,
 			onProfileChanged: handleProfileChanged,
 			onProfileRejected: (m) => {
-				setServerNameError(m.reason);
-				// a live setProfile rejection during play just surfaces the
-				// error on the next dialog open; only an auto-join / Join-press
-				// rejection routes the player back to the gate.
-				if (phaseRef.current.kind !== "joined") setPhase({kind: "gate", joining: false});
+				// a live setProfile rejection during play surfaces the error on
+				// the next Settings open. a pre-join rejection (a stale invalid
+				// name) is recovered silently: swap in a fresh random name —
+				// keeping the chosen avatar/palette — that WsClient then re-sends
+				// on its bounded reconnect.
+				if (phaseRef.current.kind === "joined") setServerNameError(m.reason);
+				else setProfile((prev) => ({...prev, name: randomProfile().name}));
 			},
 		});
-		// the connection is opened on Join press or auto-join — not here:
-		// the hello carries the player's profile, so connecting before they
-		// pick one would drop us into the world without an identity.
+		// the connection is opened by the auto-join effect once the map loads,
+		// not here — this effect only constructs the client and wires events.
 		return () => {
 			ws.disconnect();
 			wsRef.current = null;
 		};
-	}, [handleWelcome, handleJoin, handleLeave, handleProfileChanged, phaseRef, profileRef]);
-
-	const onJoin = useCallback(() => {
-		if (!validateName(profileRef.current.name).ok) return;
-		setServerNameError(undefined);
-		setPhase({kind: "gate", joining: true});
-		wsRef.current?.connect();
-	}, [profileRef]);
+	}, [handleWelcome, handleJoin, handleLeave, handleProfileChanged, phaseRef, profileRef, setProfile]);
 
 	// live-apply profile edits, but only after joining. pre-join edits stay
-	// local (the gate previews them) and reach the server via the hello on Join.
+	// local and reach the server via the hello sent on connect.
 	useEffect(() => {
 		if (phaseRef.current.kind !== "joined") return;
 		if (!validateName(profile.name).ok) return;
@@ -293,20 +262,17 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		onTileClick,
 	});
 
-	// resolve the initial phase once the map loads: returning players (resume
-	// token + valid name) auto-connect; otherwise the gate appears for a
-	// first-run or invalid-name fallback. fires at most once because the only
-	// transition out of preMap is into autoJoining or gate.
+	// resolve the initial phase once the map loads: everyone auto-joins with
+	// their saved (or random first-run) identity — there's no first-run picker.
+	// a legacy profile with an invalid/empty name gets a fresh random one first.
+	// fires at most once because the only transition out of preMap is into joining.
 	useEffect(() => {
 		if (phase.kind !== "preMap") return;
 		if (state.status !== "ok") return;
-		if (hasResumeToken() && validateName(profileRef.current.name).ok) {
-			setPhase({kind: "autoJoining"});
-			wsRef.current?.connect();
-		} else {
-			setPhase({kind: "gate", joining: false});
-		}
-	}, [phase.kind, state.status, profileRef]);
+		if (!validateName(profileRef.current.name).ok) setProfile(randomProfile());
+		setPhase({kind: "joining"});
+		wsRef.current?.connect();
+	}, [phase.kind, state.status, profileRef, setProfile]);
 
 	const map = state.status === "ok" ? state.map : null;
 	const tileX = map && cursor ? Math.floor(cursor.x / map.tilewidth) : null;
@@ -337,19 +303,8 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 						{state.message}
 					</pre>
 				</div>
-			) : phase.kind === "preMap" || phase.kind === "autoJoining" ? (
+			) : phase.kind === "preMap" || phase.kind === "joining" ? (
 				<LoadingScreen />
-			) : phase.kind === "gate" ? (
-				<JoinGate
-					name={profile.name}
-					onNameChange={onNameChange}
-					serverNameError={serverNameError}
-					avatarId={profile.avatarId}
-					paletteId={profile.paletteId}
-					onChange={onAvatarPaletteChange}
-					onJoin={onJoin}
-					joining={phase.joining}
-				/>
 			) : (
 				<>
 					<div className="absolute top-2 left-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">

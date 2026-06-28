@@ -13,6 +13,7 @@ import {
 	type BasicCharacter,
 	type World,
 } from "@/game";
+import {randomAvatarId, randomPaletteId} from "@/lib/randomProfile";
 import {useLocalStorage} from "@/lib/useLocalStorage";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
 import {PALETTES} from "@/sprites/palettes";
@@ -49,11 +50,11 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	const [tickRate, setTickRate] = useLocalStorage("koholint:map.tickRate", DEFAULT_TICK_RATE_HZ);
 	const [avatarId, setAvatarId] = useLocalStorage<string>(
 		"koholint:player.avatarId",
-		AVATARS[0].id
+		randomAvatarId
 	);
 	const [paletteId, setPaletteId] = useLocalStorage<string | null>(
 		"koholint:player.paletteId",
-		null
+		randomPaletteId
 	);
 	const [pickerOpen, setPickerOpen] = useState(false);
 

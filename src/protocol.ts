@@ -21,7 +21,11 @@ export type ChatMessage =
 			readonly color: HexColor;
 			readonly avatarId: string;
 			readonly paletteId: string | null;
+			// `text` is always the obscenity-filtered version shown by default.
+			// `rawText` carries the original and is present only when filtering
+			// changed something, so clients can reveal it via the chat toggle.
 			readonly text: string;
+			readonly rawText?: string;
 			readonly timestamp: number;
 	  }
 	| {

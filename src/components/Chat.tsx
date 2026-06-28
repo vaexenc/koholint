@@ -17,10 +17,12 @@ export type {ChatMessage};
 const TIMESTAMP_MODES = ["off", "24h", "12h"] as const;
 const AVATAR_MODES = ["off", "on"] as const;
 const PRESENCE_MODES = ["off", "on"] as const;
+const OBSCENITY_MODES = ["off", "on"] as const;
 
 export type TimestampMode = (typeof TIMESTAMP_MODES)[number];
 export type AvatarMode = (typeof AVATAR_MODES)[number];
 export type PresenceMode = (typeof PRESENCE_MODES)[number];
+export type ObscenityMode = (typeof OBSCENITY_MODES)[number];
 
 export type ChatSettings = {
 	timestampMode: TimestampMode;
@@ -28,12 +30,16 @@ export type ChatSettings = {
 	// presence join/leave/reconnect lines off by default per HANDOFF; users opt
 	// in from the chat settings popover.
 	presenceMode: PresenceMode;
+	// "on" reveals the unfiltered text the server ships alongside the censored
+	// version; off (default) keeps obscenities masked.
+	obscenityMode: ObscenityMode;
 };
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
 	timestampMode: "24h",
 	avatarMode: "on",
 	presenceMode: "off",
+	obscenityMode: "off",
 };
 
 const PIN_THRESHOLD = 8;
@@ -48,6 +54,10 @@ function isAvatarMode(v: string): v is AvatarMode {
 
 function isPresenceMode(v: string): v is PresenceMode {
 	return PRESENCE_MODES.some((m) => m === v);
+}
+
+function isObscenityMode(v: string): v is ObscenityMode {
+	return OBSCENITY_MODES.some((m) => m === v);
 }
 
 function fmtTime(ts: number, mode: TimestampMode) {
@@ -112,7 +122,7 @@ function Chat(props: ChatProps) {
 	const [pinned, setPinned] = useState(true);
 	const scrollRootRef = useRef<HTMLDivElement | null>(null);
 	const viewportRef = useRef<HTMLElement | null>(null);
-	const {timestampMode, avatarMode, presenceMode} = settings;
+	const {timestampMode, avatarMode, presenceMode, obscenityMode} = settings;
 
 	const updateSettings = (patch: Partial<ChatSettings>) => {
 		onSettingsChange?.({...settings, ...patch});
@@ -162,7 +172,9 @@ function Chat(props: ChatProps) {
 			<div className={cn("flex h-full min-h-0 flex-col", className)}>
 				<ScrollArea ref={scrollRootRef} className="min-h-0 flex-1">
 					<div className="flex flex-col gap-1 px-3 py-2">
-						{messages.map((m) => renderRow(m, timestampMode, avatarMode, presenceMode))}
+						{messages.map((m) =>
+							renderRow(m, timestampMode, avatarMode, presenceMode, obscenityMode)
+						)}
 					</div>
 				</ScrollArea>
 				<ComposeRow
@@ -187,7 +199,8 @@ function renderRow(
 	m: ChatMessage,
 	timestampMode: TimestampMode,
 	avatarMode: AvatarMode,
-	presenceMode: PresenceMode
+	presenceMode: PresenceMode,
+	obscenityMode: ObscenityMode
 ) {
 	const ts = fmtTime(m.timestamp, timestampMode);
 	if (m.kind === "system") {
@@ -222,6 +235,7 @@ function renderRow(
 			</div>
 		);
 	}
+	const text = obscenityMode === "on" && m.rawText !== undefined ? m.rawText : m.text;
 	return (
 		<div key={m.id} className="flex items-start gap-1.5 leading-snug">
 			{avatarMode === "on" && <AvatarCell avatarId={m.avatarId} paletteId={m.paletteId} />}
@@ -231,7 +245,7 @@ function renderRow(
 					{m.name}
 				</span>
 				<span className="text-neutral-400">: </span>
-				<span>{m.text}</span>
+				<span>{text}</span>
 			</div>
 		</div>
 	);
@@ -309,7 +323,7 @@ type SettingsPopoverProps = {
 };
 
 function SettingsPopover({settings, onChange}: SettingsPopoverProps) {
-	const {timestampMode, avatarMode, presenceMode} = settings;
+	const {timestampMode, avatarMode, presenceMode, obscenityMode} = settings;
 	return (
 		<Popover>
 			<Tooltip>
@@ -364,6 +378,21 @@ function SettingsPopover({settings, onChange}: SettingsPopoverProps) {
 						onValueChange={(v) => isPresenceMode(v) && onChange({presenceMode: v})}
 					>
 						{PRESENCE_MODES.map((m) => (
+							<ToggleGroupItem key={m} value={m}>
+								{m}
+							</ToggleGroupItem>
+						))}
+					</ToggleGroup>
+					<span className="text-muted-foreground">obscenities</span>
+					<ToggleGroup
+						type="single"
+						value={obscenityMode}
+						size="sm"
+						spacing={0}
+						variant="outline"
+						onValueChange={(v) => isObscenityMode(v) && onChange({obscenityMode: v})}
+					>
+						{OBSCENITY_MODES.map((m) => (
 							<ToggleGroupItem key={m} value={m}>
 								{m}
 							</ToggleGroupItem>

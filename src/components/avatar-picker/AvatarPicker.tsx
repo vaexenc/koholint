@@ -1,7 +1,6 @@
 import {AVATARS, type Avatar} from "@/components/avatar-picker/registry";
 import {SpriteCanvas} from "@/components/SpriteCanvas";
 import {Input} from "@/components/ui/input";
-import {validateName} from "@/lib/validateName";
 import {
 	CLASSIC_CHARACTER_ANIMATIONS,
 	type ClassicCharacterAnimationName,
@@ -112,13 +111,11 @@ function PaletteOffSwatch({selected, onSelect}: PaletteOffSwatchProps) {
 type NameFieldProps = {
 	value: string;
 	onChange: (next: string) => void;
-	serverError?: string;
+	error?: string | null;
+	checking?: boolean;
 };
 
-function NameField({value, onChange, serverError}: NameFieldProps) {
-	const check = validateName(value);
-	const localError = check.ok ? null : check.reason;
-	const error = localError ?? serverError ?? null;
+function NameField({value, onChange, error, checking}: NameFieldProps) {
 	return (
 		<label className="flex flex-col gap-1.5">
 			<span className="text-xs text-muted-foreground">Display name</span>
@@ -129,7 +126,11 @@ function NameField({value, onChange, serverError}: NameFieldProps) {
 				maxLength={40}
 				aria-invalid={error ? true : undefined}
 			/>
-			{error ? <span className="text-xs text-destructive">{error}</span> : null}
+			{error ? (
+				<span className="text-xs text-destructive">{error}</span>
+			) : checking ? (
+				<span className="text-xs text-muted-foreground">checking name…</span>
+			) : null}
 		</label>
 	);
 }
@@ -142,9 +143,10 @@ export type AvatarPickerProps = {
 	// (online mode). offline mode omits them and the picker stays name-less.
 	name?: string;
 	onNameChange?: (next: string) => void;
-	// authoritative reject reason from the server, surfaced alongside local
-	// validation so the user sees both layers of feedback.
-	serverNameError?: string;
+	// resolved name error and whether a save-time validation request is in
+	// flight, both supplied by the owning surface (validation happens on save).
+	nameError?: string | null;
+	nameChecking?: boolean;
 	// drives the preview walk-cycle; pass the surrounding surface's open state so
 	// we don't churn an interval while it's hidden.
 	active: boolean;
@@ -159,7 +161,8 @@ export function AvatarPicker({
 	onChange,
 	name,
 	onNameChange,
-	serverNameError,
+	nameError,
+	nameChecking,
 	active,
 }: AvatarPickerProps) {
 	const selected = AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0];
@@ -170,7 +173,12 @@ export function AvatarPicker({
 	return (
 		<>
 			{showName ? (
-				<NameField value={name} onChange={onNameChange} serverError={serverNameError} />
+				<NameField
+					value={name}
+					onChange={onNameChange}
+					error={nameError}
+					checking={nameChecking}
+				/>
 			) : null}
 			<div className="flex gap-6">
 				<ul className="flex w-40 flex-col gap-2">

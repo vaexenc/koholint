@@ -25,10 +25,13 @@ export const RESUME_TOKEN_KEY = "koholint:resumeToken";
 // 1->2->4->8s cap per HANDOFF reconnect spec. last entry repeats forever.
 const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000, 8000];
 // ws close code the server uses for protocol/validation failures, including a
-// rejected hello name. reconnecting re-sends the same hello and would be
-// rejected identically, so we treat it as terminal and let the caller decide
-// what to do (e.g. surface the error and re-connect once the name is fixed).
+// rejected hello name. before welcome we retry it a few times — the page swaps
+// in a fresh random name on each profileRejected — then it's terminal; after
+// welcome it's always terminal (resending the same hello would reject again).
 const CLOSE_PROTOCOL = 1008;
+// bound on auto-retries after a rejected hello (CLOSE_PROTOCOL before welcome).
+// guards against a pathological reject loop when fresh random names keep failing.
+const MAX_HELLO_REJECTS = 3;
 // drop inputs older than ~30s so a long disconnect doesn't shower the server
 // with stale frames on resume. matches MAX_INPUT_AGE_TICKS on the server.
 const INPUT_MAX_AGE_TICKS = 30 * 30;
@@ -64,6 +67,7 @@ export class WsClient {
 	private status: ConnectionStatus = "idle";
 	private hasEverConnected = false;
 	private reconnectAttempt = 0;
+	private helloRejects = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private intentionalClose = false;
 	private outbox: ClientMessage[] = [];
@@ -229,6 +233,7 @@ export class WsClient {
 		setStored(RESUME_TOKEN_KEY, msg.resumeToken);
 		this.hasEverConnected = true;
 		this.reconnectAttempt = 0;
+		this.helloRejects = 0;
 		this.lastServerAck = msg.serverTick;
 		// pre-welcome inputs reference a tick frame that may no longer line
 		// up with the server; drop them and let the page record fresh ones.
@@ -240,9 +245,19 @@ export class WsClient {
 
 	private onClose(ev: CloseEvent): void {
 		this.socket = null;
-		if (this.intentionalClose || ev.code === 1000 || ev.code === CLOSE_PROTOCOL) {
+		if (this.intentionalClose || ev.code === 1000) {
 			this.setStatus("closed");
 			return;
+		}
+		// a protocol close before welcome is a rejected hello. the page swaps in
+		// a fresh random profile on profileRejected, so retry through the normal
+		// reconnect path — bounded, and terminal once welcomed or exhausted.
+		if (ev.code === CLOSE_PROTOCOL) {
+			if (this.hasEverConnected || this.helloRejects >= MAX_HELLO_REJECTS) {
+				this.setStatus("closed");
+				return;
+			}
+			this.helloRejects++;
 		}
 		this.scheduleReconnect();
 	}

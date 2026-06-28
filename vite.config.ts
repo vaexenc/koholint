@@ -26,6 +26,10 @@ export default defineConfig(({mode}) => {
 					target: `ws://127.0.0.1:${serverPort}`,
 					ws: true,
 				},
+				// name validation (and any future HTTP api) lives on the server.
+				"/api": {
+					target: `http://127.0.0.1:${serverPort}`,
+				},
 			},
 		},
 	};

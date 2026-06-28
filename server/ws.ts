@@ -1,5 +1,4 @@
 import {NEUTRAL_INPUT} from "@/game/types";
-import {validateName} from "@/lib/validateName";
 import {
 	type ChatMessage,
 	type ClientMessage,
@@ -13,6 +12,7 @@ import type {IncomingMessage, Server} from "node:http";
 import type {Duplex} from "node:stream";
 import {WebSocketServer, type WebSocket} from "ws";
 import {log} from "./log";
+import {censorProfanity, checkName} from "./profanity";
 import type {ResumeStore} from "./resume";
 import {Room, type RoomListener, type Session} from "./rooms";
 
@@ -147,7 +147,7 @@ export class WsServer {
 	private handleHello(socket: WebSocket, msg: ClientMessage): void {
 		if (msg.type !== "hello") return;
 		const isAdmin = this.isAdminToken(msg.adminToken);
-		const nameCheck = validateName(msg.name, {bypassReserved: isAdmin});
+		const nameCheck = checkName(msg.name, isAdmin);
 		if (!nameCheck.ok) {
 			safeSendJson(socket, {type: "profileRejected", reason: nameCheck.reason});
 			socket.close(CLOSE_PROTOCOL, "invalid name");
@@ -280,7 +280,7 @@ export class WsServer {
 
 	private onSetProfile(conn: Connection, profile: Profile): void {
 		const isAdmin = conn.session.isAdmin;
-		const check = validateName(profile.name, {bypassReserved: isAdmin});
+		const check = checkName(profile.name, isAdmin);
 		if (!check.ok) {
 			this.send(conn.connId, {type: "profileRejected", reason: check.reason});
 			return;
@@ -311,6 +311,7 @@ export class WsServer {
 		const text = rawText.slice(0, CHAT_MAX_CHARS).trim();
 		if (!text) return;
 		conn.chatTimestamps.push(now);
+		const filtered = censorProfanity(text);
 		const message: ChatMessage = {
 			id: randomUUID(),
 			kind: "chat",
@@ -319,7 +320,10 @@ export class WsServer {
 			color: paletteAccent(conn.session.profile.paletteId),
 			avatarId: conn.session.profile.avatarId,
 			paletteId: conn.session.profile.paletteId,
-			text,
+			text: filtered,
+			// only ship the original when it differs, so clients can offer a
+			// "show obscenities" toggle without a second round-trip.
+			...(filtered === text ? {} : {rawText: text}),
 			timestamp: now,
 		};
 		this.room.pushChat(message);
