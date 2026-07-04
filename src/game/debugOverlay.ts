@@ -1,4 +1,5 @@
 import type {CliffGrid, SolidGrid} from "./collision";
+import {forEachPushCell, type PushGrid} from "./push";
 import type {TeleporterGrid} from "./teleport";
 import {forEachStairsCell, forEachSwimCell, type TerrainGrid} from "./terrain";
 import type {World} from "./world";
@@ -8,6 +9,7 @@ export type DebugOverlayOptions = {
 	readonly objects: boolean;
 	readonly holes: boolean;
 	readonly cliffs: boolean;
+	readonly push: boolean;
 	readonly swim: boolean;
 	readonly stairs: boolean;
 	readonly teleporters: boolean;
@@ -19,6 +21,7 @@ export const DEFAULT_DEBUG_OVERLAY: DebugOverlayOptions = {
 	objects: false,
 	holes: false,
 	cliffs: false,
+	push: false,
 	swim: false,
 	stairs: false,
 	teleporters: false,
@@ -30,6 +33,7 @@ export const DEBUG_OVERLAY_ALL: DebugOverlayOptions = {
 	objects: true,
 	holes: true,
 	cliffs: true,
+	push: true,
 	swim: true,
 	stairs: true,
 	teleporters: true,
@@ -42,6 +46,7 @@ const STYLE = {
 	solids: {stroke: "#ff3344", fill: "rgba(255, 51, 68, 0.22)"},
 	holes: {stroke: "#3399ff", fill: "rgba(51, 153, 255, 0.25)"},
 	cliffs: {stroke: "#ffaa00", fill: "rgba(255, 170, 0, 0.22)"},
+	push: {stroke: "#22ddaa", fill: "rgba(34, 221, 170, 0.20)"},
 	swim: {stroke: "#33ccff", fill: "rgba(51, 204, 255, 0.18)"},
 	stairs: {stroke: "#ffdd33", fill: "rgba(255, 221, 51, 0.18)"},
 	teleporters: {stroke: "#ff44ff", fill: "rgba(255, 68, 255, 0.18)"},
@@ -67,6 +72,7 @@ export function drawDebugOverlay(
 	if (options.swim && world.terrain) drawSwim(ctx, world.terrain, STYLE.swim);
 	if (options.stairs && world.terrain) drawStairs(ctx, world.terrain, STYLE.stairs);
 	if (options.cliffs && world.cliffs) drawCliffs(ctx, world.cliffs, STYLE.cliffs);
+	if (options.push && world.push) drawPush(ctx, world.push, STYLE.push);
 	if (options.teleporters && world.teleporters)
 		drawTeleporters(ctx, world.teleporters, STYLE.teleporters);
 	if (options.hitboxes) drawHitboxes(ctx, world, STYLE.hitboxes);
@@ -114,6 +120,26 @@ function drawCliffs(ctx: CanvasRenderingContext2D, cliffs: CliffGrid, style: Sty
 		ctx.fillRect(r.x, r.y, r.width, r.height);
 		ctx.strokeRect(r.x, r.y, r.width, r.height);
 	}
+}
+
+// each push cell is tinted and gets a line from its center toward the push
+// direction so the conveyor flow is readable at a glance.
+function drawPush(ctx: CanvasRenderingContext2D, push: PushGrid, style: Style): void {
+	applyStyle(ctx, style);
+	forEachPushCell(push, (col, row, v) => {
+		const x = col * push.tileWidth;
+		const y = row * push.tileHeight;
+		ctx.fillRect(x, y, push.tileWidth, push.tileHeight);
+		ctx.strokeRect(x, y, push.tileWidth, push.tileHeight);
+		const cx = x + push.tileWidth / 2;
+		const cy = y + push.tileHeight / 2;
+		const len = Math.hypot(v.x, v.y) || 1;
+		const reach = Math.min(push.tileWidth, push.tileHeight) / 2 - 2;
+		ctx.beginPath();
+		ctx.moveTo(cx, cy);
+		ctx.lineTo(cx + (v.x / len) * reach, cy + (v.y / len) * reach);
+		ctx.stroke();
+	});
 }
 
 function drawTeleporters(

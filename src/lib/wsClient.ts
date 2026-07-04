@@ -329,7 +329,8 @@ export function replayLocalInputs(
 			world.terrain,
 			world.holes,
 			world.cliffs,
-			world.teleporters
+			world.teleporters,
+			world.push
 		);
 	}
 }

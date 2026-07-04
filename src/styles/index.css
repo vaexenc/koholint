@@ -131,4 +131,12 @@
 	html {
 		@apply font-sans;
 	}
+	/* radix positions floating content inside an undocumented wrapper element
+	   that hit-tests even though the tooltip content itself is
+	   pointer-events-none, blocking hover on controls a tooltip overlaps.
+	   scoped via :has to tooltips only — popover/dropdown wrappers must keep
+	   receiving clicks. */
+	[data-radix-popper-content-wrapper]:has([data-slot="tooltip-content"]) {
+		pointer-events: none;
+	}
 }

@@ -58,7 +58,7 @@ export function SettingsDialog({
 			setDraftAvatarId(avatarId);
 			setDraftPaletteId(paletteId);
 			setDraftName(name ?? "");
-			setNameError(showName ? (serverNameError ?? null) : null);
+			setNameError(showName ? serverNameError ?? null : null);
 			setSaving(false);
 		}
 		wasOpen.current = open;

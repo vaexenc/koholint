@@ -5,6 +5,7 @@ import {
 } from "@/game/character";
 import {buildCliffGrid, buildHoleGrid, buildSolidGrid} from "@/game/collision";
 import {StaticInputProvider} from "@/game/controllers";
+import {buildPushGrid} from "@/game/push";
 import {sampleSpawn, type SpawnRegion} from "@/game/spawn";
 import {buildTeleporterGrid} from "@/game/teleport";
 import {buildTerrainGrid} from "@/game/terrain";
@@ -88,11 +89,13 @@ export class Room {
 		const holeGrid = buildHoleGrid(deps.map);
 		const cliffGrid = buildCliffGrid(deps.map);
 		const teleporters = buildTeleporterGrid(deps.map);
+		const pushGrid = buildPushGrid(deps.map);
 		this.world = new World(solidGrid, {
 			terrain: terrainGrid,
 			holes: holeGrid,
 			cliffs: cliffGrid,
 			teleporters,
+			push: pushGrid,
 		});
 	}
 

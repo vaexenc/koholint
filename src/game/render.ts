@@ -76,7 +76,7 @@ export class CharacterRenderer {
 		// non-swimmers whose feet are slightly above the water line.
 		const drawables = [...world.characters.values()].map((char) => ({
 			char,
-			swimming: world.terrain ? isSwimTile(world.terrain, characterAabb(char)) : false,
+			swimming: isSwimming(world, char),
 		}));
 		drawables.sort(
 			(a, b) =>
@@ -149,6 +149,16 @@ export class CharacterRenderer {
 function pickAnimationName(char: BasicCharacter): ClassicCharacterAnimationName {
 	const prefix: "walk" | "stand" = char.walking ? "walk" : "stand";
 	return `${prefix}_${char.facing}`;
+}
+
+// an airborne body never draws the swim pose, even while its ground projection
+// crosses water (e.g. hopping a cliff channel). remote characters don't carry
+// jump state — their lifted arc arrives via jumpOffsetY — so the offset pair
+// doubles as the airborne signal for them (and for teleport rise/fall).
+function isSwimming(world: World, char: BasicCharacter): boolean {
+	if (!world.terrain) return false;
+	if (char.jump || char.jumpOffsetY > 0 || char.prevJumpOffsetY > 0) return false;
+	return isSwimTile(world.terrain, characterAabb(char));
 }
 
 function swimBobOffset(timeMs: number): number {

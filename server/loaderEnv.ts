@@ -1,6 +1,6 @@
+import type {MapLoaderEnv} from "@/tiled/loadMap";
 import {readFile} from "node:fs/promises";
 import {pathToFileURL} from "node:url";
-import type {MapLoaderEnv} from "@/tiled/loadMap";
 
 // resolves a fs path relative to a base via file:// URLs so the same code works
 // for both absolute paths and relative `source="..."` references.

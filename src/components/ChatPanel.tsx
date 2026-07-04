@@ -4,7 +4,13 @@ import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/compon
 import {cn} from "@/lib/utils";
 import type {ConnectionStatus} from "@/lib/wsClient";
 import type {ConnId} from "@/protocol";
-import {ChevronRight, MessageSquare, PanelRightClose} from "lucide-react";
+import {
+	ArrowLeftRight,
+	ChevronRight,
+	MessageSquare,
+	PanelLeftClose,
+	PanelRightClose,
+} from "lucide-react";
 import {
 	useCallback,
 	useEffect,
@@ -16,11 +22,16 @@ import {
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 720;
-const DEFAULT_WIDTH = 356;
 
-function clampWidth(w: number) {
+export const DEFAULT_CHAT_WIDTH = 356;
+
+export function clampChatWidth(w: number) {
 	return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, w));
 }
+
+// which window edge the chat panel docks to; the rest of the page UI (hud,
+// show-chat button, map camera inset) mirrors along with it.
+export type UiSide = "left" | "right";
 
 export type PlayerListEntry = {
 	readonly connId: ConnId;
@@ -35,8 +46,15 @@ type ChatPanelProps = {
 	onSend?: (text: string) => void;
 	settings?: ChatSettings;
 	onSettingsChange?: (settings: ChatSettings) => void;
-	initialWidth?: number;
-	onWidthChange?: (width: number) => void;
+	// width, hidden and side are owned by the page so it can inset the map
+	// camera by the space the panel actually covers and mirror the rest of the
+	// UI. pass width through clampChatWidth.
+	width: number;
+	onWidthChange: (width: number) => void;
+	hidden: boolean;
+	onHiddenChange: (hidden: boolean) => void;
+	side: UiSide;
+	onSideChange: (side: UiSide) => void;
 	status?: ConnectionStatus;
 	players?: readonly PlayerListEntry[];
 	playerListCollapsed?: boolean;
@@ -49,24 +67,18 @@ function ChatPanel({
 	onSend,
 	settings,
 	onSettingsChange,
-	initialWidth = DEFAULT_WIDTH,
+	width,
 	onWidthChange,
+	hidden,
+	onHiddenChange,
+	side,
+	onSideChange,
 	status,
 	players,
 	playerListCollapsed = false,
 	onPlayerListCollapsedChange,
 	canSend,
 }: ChatPanelProps) {
-	const [width, setWidthState] = useState(() => clampWidth(initialWidth));
-	const [hidden, setHidden] = useState(false);
-	const setWidth = useCallback(
-		(w: number) => {
-			const next = clampWidth(w);
-			setWidthState(next);
-			onWidthChange?.(next);
-		},
-		[onWidthChange]
-	);
 	const [resizing, setResizing] = useState(false);
 	const panelRef = useRef<HTMLDivElement | null>(null);
 
@@ -80,9 +92,12 @@ function ChatPanel({
 		if (!resizing) return;
 		const panel = panelRef.current;
 		if (!panel) return;
-		const right = panel.getBoundingClientRect().right;
+		// the docked edge stays put while the opposite edge follows the cursor.
+		const rect = panel.getBoundingClientRect();
 		const onMove = (e: PointerEvent) => {
-			setWidth(clampWidth(right - e.clientX));
+			onWidthChange(
+				clampChatWidth(side === "right" ? rect.right - e.clientX : e.clientX - rect.left)
+			);
 		};
 		const onUp = () => setResizing(false);
 		window.addEventListener("pointermove", onMove);
@@ -99,7 +114,9 @@ function ChatPanel({
 			document.body.style.cursor = prevCursor;
 			document.body.style.userSelect = prevSelect;
 		};
-	}, [resizing, setWidth]);
+	}, [resizing, onWidthChange, side]);
+
+	const awaySide = side === "right" ? "left" : "right";
 
 	if (hidden) {
 		return (
@@ -110,14 +127,17 @@ function ChatPanel({
 							type="button"
 							variant="ghost"
 							size="icon-sm"
-							onClick={() => setHidden(false)}
+							onClick={() => onHiddenChange(false)}
 							aria-label="show chat"
-							className="fixed top-2 right-2 z-10 bg-black/70 text-neutral-100 shadow-lg backdrop-blur hover:bg-black/80"
+							className={cn(
+								"fixed top-2 z-10 bg-black/70 text-neutral-100 shadow-lg backdrop-blur hover:bg-black/80",
+								side === "right" ? "right-2" : "left-2"
+							)}
 						>
 							<MessageSquare />
 						</Button>
 					</TooltipTrigger>
-					<TooltipContent side="left">Show chat</TooltipContent>
+					<TooltipContent side={awaySide}>Show chat</TooltipContent>
 				</Tooltip>
 			</TooltipProvider>
 		);
@@ -129,12 +149,17 @@ function ChatPanel({
 			<div
 				ref={panelRef}
 				style={{width}}
-				className="fixed top-0 right-0 bottom-0 flex flex-col bg-black/70 font-mono text-xs text-neutral-100 shadow-lg backdrop-blur"
+				className={cn(
+					"fixed top-0 bottom-0 flex flex-col bg-black/70 font-mono text-xs text-neutral-100 shadow-lg backdrop-blur",
+					side === "right" ? "right-0" : "left-0"
+				)}
 			>
 				<Header
 					status={status}
 					playerCount={players?.length}
-					onHide={() => setHidden(true)}
+					side={side}
+					onSwapSide={() => onSideChange(awaySide)}
+					onHide={() => onHiddenChange(true)}
 				/>
 				{players ? (
 					<PlayerListSection
@@ -154,7 +179,10 @@ function ChatPanel({
 					role="separator"
 					aria-orientation="vertical"
 					onPointerDown={onResizePointerDown}
-					className="absolute top-0 -left-1 h-full w-2 cursor-ew-resize touch-none"
+					className={cn(
+						"absolute top-0 h-full w-2 cursor-ew-resize touch-none",
+						side === "right" ? "-left-1" : "-right-1"
+					)}
 				/>
 			</div>
 		</TooltipProvider>
@@ -182,10 +210,13 @@ const STATUS_DOT_CLASS: Record<ConnectionStatus, string> = {
 type HeaderProps = {
 	status?: ConnectionStatus;
 	playerCount?: number;
+	side: UiSide;
+	onSwapSide: () => void;
 	onHide: () => void;
 };
 
-function Header({status, playerCount, onHide}: HeaderProps) {
+function Header({status, playerCount, side, onSwapSide, onHide}: HeaderProps) {
+	const awaySide = side === "right" ? "left" : "right";
 	return (
 		<div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-1 text-neutral-400">
 			<div className="flex items-center gap-2 min-w-0">
@@ -207,20 +238,36 @@ function Header({status, playerCount, onHide}: HeaderProps) {
 					</>
 				)}
 			</div>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<Button
-						type="button"
-						variant="ghost"
-						size="icon-sm"
-						onClick={onHide}
-						aria-label="hide chat"
-					>
-						<PanelRightClose />
-					</Button>
-				</TooltipTrigger>
-				<TooltipContent side="left">Hide chat</TooltipContent>
-			</Tooltip>
+			<div className="flex items-center">
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-sm"
+							onClick={onSwapSide}
+							aria-label="switch ui side"
+						>
+							<ArrowLeftRight />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side={awaySide}>Switch side</TooltipContent>
+				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-sm"
+							onClick={onHide}
+							aria-label="hide chat"
+						>
+							{side === "right" ? <PanelRightClose /> : <PanelLeftClose />}
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side={awaySide}>Hide chat</TooltipContent>
+				</Tooltip>
+			</div>
 		</div>
 	);
 }

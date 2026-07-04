@@ -16,7 +16,9 @@ export async function expandExternalTilesets(
 	if (!isObject(data)) return data;
 	const tilesets = data.tilesets;
 	if (!Array.isArray(tilesets)) return data;
-	const expanded = await Promise.all(tilesets.map((entry) => expandIfExternal(entry, mapUrl, env)));
+	const expanded = await Promise.all(
+		tilesets.map((entry) => expandIfExternal(entry, mapUrl, env))
+	);
 	return {...data, tilesets: expanded};
 }
 
@@ -45,7 +47,8 @@ function embedTileset(
 	env: MapLoaderEnv
 ): Json {
 	const embedded: Json = {...tileset, firstgid};
-	if (typeof tileset.image === "string") embedded.image = env.resolveUrl(tilesetUrl, tileset.image);
+	if (typeof tileset.image === "string")
+		embedded.image = env.resolveUrl(tilesetUrl, tileset.image);
 	return embedded;
 }
 

@@ -1,10 +1,5 @@
 import {validateName, type NameValidation} from "@/lib/validateName";
-import {
-	englishDataset,
-	englishRecommendedTransformers,
-	RegExpMatcher,
-	TextCensor,
-} from "obscenity";
+import {englishDataset, englishRecommendedTransformers, RegExpMatcher, TextCensor} from "obscenity";
 
 // server-only obscenity handling. obscenity must never reach the client bundle,
 // so this lives under server/ and the username check runs authoritatively here

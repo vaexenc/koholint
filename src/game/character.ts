@@ -3,6 +3,9 @@ import {WALK_CYCLE_MS} from "@/sprites/animations";
 import type {SpriteAsset, SpritePalette} from "@/types";
 import {
 	aabbOverlapsCliff,
+	aabbsOverlap,
+	clampOutOfBox,
+	CLIFF_DIRECTION_VECTORS,
 	findCliffLanding,
 	findNearestFreeAabb,
 	findOverlappingCliff,
@@ -14,6 +17,7 @@ import {
 	type SolidGrid,
 } from "./collision";
 import {lerp} from "./math";
+import {samplePush, type PushGrid} from "./push";
 import {findOverlappingTeleporter, type Teleporter, type TeleporterGrid} from "./teleport";
 import {getTerrainSpeedMultiplier, type TerrainGrid} from "./terrain";
 import {inputHasMovement, type CharacterInput, type Direction, type EntityId} from "./types";
@@ -73,6 +77,14 @@ export type CharacterTeleport = {
 	elapsedMs: number;
 };
 
+// set right after every warp so the destination pad can't immediately re-fire.
+// `zone` is the region the body must step clear of to re-arm the pad. `block`,
+// when present, is kept solid so holding the entry direction can't climb back
+// onto the destination's solid cave tile — only stand-in-front destinations
+// (offset onto the floor beside a solid tile) need it; stand-on-top
+// destinations leave it undefined since the pad itself stays pathable.
+export type TeleportLatch = {readonly id: number; readonly block?: Aabb; readonly zone: Aabb};
+
 export type BasicCharacter = {
 	readonly id: EntityId;
 	// sprite and paletteSwap are mutable so callers (e.g. the avatar picker)
@@ -109,6 +121,8 @@ export type BasicCharacter = {
 	// same prev/current pairing as x/y.
 	jumpOffsetY: number;
 	prevJumpOffsetY: number;
+	// non-null while a stand-in-front warp is latched; see TeleportLatch.
+	teleportLatch: TeleportLatch | null;
 };
 
 export type BasicCharacterOptions = {
@@ -145,6 +159,7 @@ export function createBasicCharacter(opts: BasicCharacterOptions): BasicCharacte
 		teleport: null,
 		jumpOffsetY: 0,
 		prevJumpOffsetY: 0,
+		teleportLatch: null,
 	};
 }
 
@@ -162,7 +177,8 @@ export function stepCharacter(
 	terrain?: TerrainGrid,
 	holes?: HoleGrid,
 	cliffs?: CliffGrid,
-	teleporters?: TeleporterGrid
+	teleporters?: TeleporterGrid,
+	push?: PushGrid
 ): void {
 	char.prevX = char.x;
 	char.prevY = char.y;
@@ -172,7 +188,14 @@ export function stepCharacter(
 		return;
 	}
 	if (char.jump) {
+		// the pre-jump footprint, captured before advanceJump can clear the jump. if
+		// the jump lands on a teleporter, this off-pad "before" makes the landing an
+		// edge so the warp fires: a jump drops the body straight onto the pad, which
+		// the per-frame edge check otherwise misses since the next frame already
+		// starts overlapping (so it only fired after stepping off and back on).
+		const preJump = aabbAtPosition(char, char.jump.startX, char.jump.startY);
 		advanceJump(char, dtSec);
+		if (!char.jump && teleporters) tryEnterTeleporter(char, preJump, teleporters);
 		return;
 	}
 	const dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
@@ -192,15 +215,22 @@ export function stepCharacter(
 			// an instant pop to the open side.
 			maxCornerNudgePx: stepDist,
 		});
-		const endX = char.x + (result.position.x - before.x);
-		const endY = char.y + (result.position.y - before.y);
+		// while latched in front of a solid cave tile, the gap between the pad and
+		// the landing spot is solid so holding the entry direction can't climb back
+		// toward the cave tile (and the wall behind it). the latch clears once the
+		// body steps off the landing spot (see tryEnterTeleporter).
+		const resolved = char.teleportLatch?.block
+			? clampOutOfBox(before, result.position, char.teleportLatch.block)
+			: result.position;
+		const endX = char.x + (resolved.x - before.x);
+		const endY = char.y + (resolved.y - before.y);
 		char.facing = nextFacing(char.facing, dx, dy);
 		if (result.jumped) {
 			startJump(char, endX, endY);
 			advanceJump(char, dtSec);
 			return;
 		}
-		if (cliffs && tryCliffJump(char, before, result.position, grid, holes, cliffs)) {
+		if (cliffs && tryCliffJump(char, before, resolved, grid, terrain, holes, cliffs)) {
 			advanceJump(char, dtSec);
 			return;
 		}
@@ -213,26 +243,46 @@ export function stepCharacter(
 		char.walking = false;
 		char.animTimeMs = 0;
 	}
+	if (push) applyPush(char, dtSec, grid, push);
+}
+
+// conveyor push: tiles tagged with pushX/pushY apply a continuous velocity
+// (px/sec) to any body resting on them. resolved against solids only — walls
+// halt the drift — and applied on top of the body's own motion so walking
+// against a current nets out. skipped while airborne, since a jump/teleport
+// returns before reaching here.
+function applyPush(char: BasicCharacter, dtSec: number, grid: SolidGrid, push: PushGrid): void {
+	const before = characterAabb(char);
+	const v = samplePush(push, before);
+	if (v.x === 0 && v.y === 0) return;
+	const {position} = moveAabb(grid, before, v.x * dtSec, v.y * dtSec);
+	char.x += position.x - before.x;
+	char.y += position.y - before.y;
 }
 
 // edge-triggered cliff drop: a footprint that wasn't overlapping any cliff
 // region last frame and now is gets launched along the region's painted
-// direction to the first tile that's clear of solid, hole, and cliff.
-// preserves this frame's perpendicular motion so diagonal approaches still
-// read as diagonal hops. no-ops when the fall path is walled in so designers
-// get a hard stop rather than a stuck body.
+// direction to the first landable tile (see findCliffLanding). only fires
+// when the motion carries into the fall direction — entering the region
+// against it (e.g. swimming into the cliff base from below) is a climb, not
+// a fall. preserves this frame's perpendicular motion so diagonal approaches
+// still read as diagonal hops. no-ops when the fall path is walled in so
+// designers get a hard stop rather than a stuck body.
 function tryCliffJump(
 	char: BasicCharacter,
 	before: Aabb,
 	after: Aabb,
 	grid: SolidGrid,
+	terrain: TerrainGrid | undefined,
 	holes: HoleGrid | undefined,
 	cliffs: CliffGrid
 ): boolean {
 	if (aabbOverlapsCliff(before, cliffs)) return false;
 	const region = findOverlappingCliff(after, cliffs);
 	if (!region) return false;
-	const landing = findCliffLanding(grid, holes, cliffs, after, region.direction);
+	const [dirX, dirY] = CLIFF_DIRECTION_VECTORS[region.direction];
+	if ((after.x - before.x) * dirX + (after.y - before.y) * dirY <= 0) return false;
+	const landing = findCliffLanding(grid, terrain, holes, cliffs, after, region.direction);
 	if (!landing) return false;
 	const horizontal = region.direction === "left" || region.direction === "right";
 	const endX = char.x + ((horizontal ? landing.x : after.x) - before.x);
@@ -275,23 +325,126 @@ function jumpArcHeight(t: number): number {
 }
 
 // edge-triggered warp: a footprint that wasn't overlapping any teleporter last
-// frame and now is gets sent to its target's center. the edge condition is
-// what keeps two mutually-linked teleporters from ping-ponging — the body
-// arrives already overlapping the destination, so the next tick's before-check
-// skips the retrigger until the player walks off and back on.
+// frame and now is gets sent to its target. every warp arms a teleportLatch on
+// the destination pad so it can't immediately re-fire — the latch holds until
+// the body steps clear of the landing region, which is what keeps mutually-linked
+// pads from ping-ponging (and survives the netcode's reconciliation replay, since
+// that snaps position back across the warp boundary but leaves the latch intact).
 function tryEnterTeleporter(
 	char: BasicCharacter,
 	before: Aabb,
 	teleporters: TeleporterGrid
 ): boolean {
+	const here = characterAabb(char);
+	// re-arm the destination pad once the body steps clear of the region it
+	// landed in. until then, holding the direction that points back at the pad
+	// (e.g. up, into the cave it just came out of) is suppressed below.
+	if (char.teleportLatch && !aabbsOverlap(here, char.teleportLatch.zone)) {
+		char.teleportLatch = null;
+	}
 	if (findOverlappingTeleporter(before, teleporters)) return false;
-	const source = findOverlappingTeleporter(characterAabb(char), teleporters);
+	const source = findOverlappingTeleporter(here, teleporters);
 	if (!source) return false;
+	if (source.id === char.teleportLatch?.id) return false;
 	const target = teleporters.byId.get(source.targetId);
 	if (!target) return false;
 	const dest = teleportDestination(char, target, source);
+	char.teleportLatch = buildTeleportLatch(char, target, dest, source.type);
 	startTeleport(char, dest, source.type);
 	return true;
+}
+
+// px the body must travel past its landing spot, away from the pad, to re-arm.
+const TELEPORT_REARM_MARGIN_PX = 3;
+
+// builds the latch for a fresh warp. a rise pad (a pit that hops the body out a
+// short way) and a stand-on-top destination (no offset, e.g. a stairs tile) both
+// keep the ground pathable: the latch needs no solid block — its zone is just the
+// pad (plus a re-arm margin), so stepping off re-arms it and walking back on fires
+// it again. a stand-in-front destination, offset onto the floor beside the pad's
+// solid cave tile, also gets a block spanning pad→landing so holding the entry
+// direction can't climb back.
+function buildTeleportLatch(
+	char: BasicCharacter,
+	target: Teleporter,
+	dest: {readonly x: number; readonly y: number},
+	type: Teleporter["type"]
+): TeleportLatch {
+	const cb = char.collisionBox;
+	const landing: Aabb = {
+		x: dest.x + cb.x,
+		y: dest.y + cb.y,
+		width: cb.width,
+		height: cb.height,
+	};
+	// a rise warp (a pit that hops the body out onto open ground) and a stand-on-top
+	// destination both leave no solid block, and the re-arm zone is just the pad —
+	// so the latch clears the instant the body steps off and walking back on fires
+	// it again.
+	if (type === "rise" || aabbsOverlap(landing, target.box)) {
+		return {
+			id: target.id,
+			zone: {
+				x: target.box.x - TELEPORT_REARM_MARGIN_PX,
+				y: target.box.y - TELEPORT_REARM_MARGIN_PX,
+				width: target.box.width + 2 * TELEPORT_REARM_MARGIN_PX,
+				height: target.box.height + 2 * TELEPORT_REARM_MARGIN_PX,
+			},
+		};
+	}
+	const x = latchSpan(target.box.x, target.box.width, landing.x, landing.width);
+	const y = latchSpan(target.box.y, target.box.height, landing.y, landing.height);
+	return {
+		id: target.id,
+		// block — pad through to the landing's near edge, kept solid so the body
+		// can't climb back toward the cave while latched.
+		block: {
+			x: x.blockMin,
+			y: y.blockMin,
+			width: x.blockMax - x.blockMin,
+			height: y.blockMax - y.blockMin,
+		},
+		// zone — block plus a small margin past the landing; the latch re-arms once
+		// the footprint leaves it, so a short step away is enough.
+		zone: {
+			x: x.zoneMin,
+			y: y.zoneMin,
+			width: x.zoneMax - x.zoneMin,
+			height: y.zoneMax - y.zoneMin,
+		},
+	};
+}
+
+// per-axis extents for the latch regions. on the axis the landing is offset
+// along, block spans pad→landing-near-edge and zone reaches a margin past it; on
+// an axis where pad and landing overlap, both just span the union.
+function latchSpan(
+	padStart: number,
+	padLen: number,
+	landStart: number,
+	landLen: number
+): {blockMin: number; blockMax: number; zoneMin: number; zoneMax: number} {
+	const padEnd = padStart + padLen;
+	const landEnd = landStart + landLen;
+	if (landStart >= padEnd) {
+		return {
+			blockMin: padStart,
+			blockMax: landStart,
+			zoneMin: padStart,
+			zoneMax: landStart + TELEPORT_REARM_MARGIN_PX,
+		};
+	}
+	if (landEnd <= padStart) {
+		return {
+			blockMin: landEnd,
+			blockMax: padEnd,
+			zoneMin: landEnd - TELEPORT_REARM_MARGIN_PX,
+			zoneMax: padEnd,
+		};
+	}
+	const min = Math.min(padStart, landStart);
+	const max = Math.max(padEnd, landEnd);
+	return {blockMin: min, blockMax: max, zoneMin: min, zoneMax: max};
 }
 
 function teleportDestination(
@@ -373,13 +526,13 @@ function advanceTeleport(char: BasicCharacter, dtSec: number): void {
 	}
 }
 
+function aabbAtPosition(char: BasicCharacter, x: number, y: number): Aabb {
+	const cb = char.collisionBox;
+	return {x: x + cb.x, y: y + cb.y, width: cb.width, height: cb.height};
+}
+
 export function characterAabb(char: BasicCharacter): Aabb {
-	return {
-		x: char.x + char.collisionBox.x,
-		y: char.y + char.collisionBox.y,
-		width: char.collisionBox.width,
-		height: char.collisionBox.height,
-	};
+	return aabbAtPosition(char, char.x, char.y);
 }
 
 // nudges a character out of any solid (or, when supplied, hole) tile it's

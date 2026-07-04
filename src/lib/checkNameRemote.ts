@@ -12,8 +12,7 @@ export async function checkNameRemote(name: string): Promise<RemoteNameResult> {
 			body: JSON.stringify({name}),
 		});
 		const data: {ok?: boolean; reason?: string} = await res.json();
-		if (data.ok === false)
-			return {ok: false, reason: data.reason ?? "name is not allowed"};
+		if (data.ok === false) return {ok: false, reason: data.reason ?? "name is not allowed"};
 		return {ok: true};
 	} catch {
 		return {ok: true};

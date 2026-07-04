@@ -1,5 +1,10 @@
 import {DEFAULT_CHAT_SETTINGS, type ChatSettings} from "@/components/Chat";
-import ChatPanel, {type PlayerListEntry} from "@/components/ChatPanel";
+import ChatPanel, {
+	clampChatWidth,
+	DEFAULT_CHAT_WIDTH,
+	type PlayerListEntry,
+	type UiSide,
+} from "@/components/ChatPanel";
 import {LoadingScreen} from "@/components/LoadingScreen";
 import {SettingsDialog} from "@/components/SettingsDialog";
 import {Button} from "@/components/ui/button";
@@ -8,6 +13,7 @@ import {randomProfile} from "@/lib/randomProfile";
 import {getStored, setStored} from "@/lib/safeStorage";
 import {useLatestRef} from "@/lib/useLatestRef";
 import {useLocalStorage} from "@/lib/useLocalStorage";
+import {cn} from "@/lib/utils";
 import {validateName} from "@/lib/validateName";
 import {WsClient, type ConnectionStatus} from "@/lib/wsClient";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
@@ -78,7 +84,11 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		"koholint:chat.settings",
 		DEFAULT_CHAT_SETTINGS
 	);
-	const [chatWidth, setChatWidth] = useLocalStorage("koholint:chat.width", 356);
+	const [chatWidth, setChatWidth] = useLocalStorage("koholint:chat.width", DEFAULT_CHAT_WIDTH);
+	const [chatHidden, setChatHidden] = useState(false);
+	const [storedUiSide, setUiSide] = useLocalStorage<UiSide>("koholint:ui.side", "right");
+	// the stored value is untyped json; anything unexpected falls back to right.
+	const uiSide: UiSide = storedUiSide === "left" ? "left" : "right";
 	const [playerListCollapsed, setPlayerListCollapsed] = useLocalStorage(
 		"koholint:chat.playerListCollapsed",
 		false
@@ -199,7 +209,15 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 			ws.disconnect();
 			wsRef.current = null;
 		};
-	}, [handleWelcome, handleJoin, handleLeave, handleProfileChanged, phaseRef, profileRef, setProfile]);
+	}, [
+		handleWelcome,
+		handleJoin,
+		handleLeave,
+		handleProfileChanged,
+		phaseRef,
+		profileRef,
+		setProfile,
+	]);
 
 	// live-apply profile edits, but only after joining. pre-join edits stay
 	// local and reach the server via the hello sent on connect.
@@ -253,10 +271,17 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		[isAdmin]
 	);
 
+	// the stored width is clamped here once; the panel and the camera inset must
+	// agree on the same value or the map edge lands under (or short of) the chat.
+	const chatPanelWidth = clampChatWidth(chatWidth);
+	const chatInset = chatHidden ? 0 : chatPanelWidth;
+
 	const {canvasProps, state, zoom, cursor} = useMapRenderer({
 		mapUrl,
 		follow,
 		debug: false,
+		insetLeft: uiSide === "left" ? chatInset : 0,
+		insetRight: uiSide === "right" ? chatInset : 0,
 		init,
 		step,
 		onTileClick,
@@ -307,7 +332,12 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 				<LoadingScreen />
 			) : (
 				<>
-					<div className="absolute top-2 left-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
+					<div
+						className={cn(
+							"absolute top-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur",
+							uiSide === "right" ? "left-2" : "right-2"
+						)}
+					>
 						<div className="flex flex-col gap-2">
 							{isAdmin && (
 								<div className="flex items-center gap-1.5 self-start rounded bg-amber-400/15 px-2 py-1 text-amber-300 ring-1 ring-inset ring-amber-400/30">
@@ -360,8 +390,12 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 						onSend={onSendChat}
 						settings={chatSettings}
 						onSettingsChange={setChatSettings}
-						initialWidth={chatWidth}
+						width={chatPanelWidth}
 						onWidthChange={setChatWidth}
+						hidden={chatHidden}
+						onHiddenChange={setChatHidden}
+						side={uiSide}
+						onSideChange={setUiSide}
 						status={status}
 						players={playerList}
 						playerListCollapsed={playerListCollapsed}

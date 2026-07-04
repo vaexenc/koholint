@@ -2,17 +2,18 @@ import type {TileFlip} from "@/tiled/gid";
 import type {TiledMap} from "@/tiled/loadMap";
 import {
 	collectTileIdsWithBoolProperty,
-	collectTilesWithBoolProperty,
+	collectTilesWithStringProperty,
 	forEachTaggedCell,
 	forEachTaggedCellWithGid,
 	hasBoolProperty,
 	iterateObjectLayers,
 } from "@/tiled/tileScan";
 import type {ITiledMapObject} from "@workadventure/tiled-map-type-guard";
+import {isSwimTile, type TerrainGrid} from "./terrain";
 
 const SOLID_PROPERTY = "solid";
 const HOLE_PROPERTY = "hole";
-const CLIFF_PROPERTY = "cliff";
+const CLIFF_DIRECTION_PROPERTY = "cliffDirection";
 
 export type SolidGrid = {
 	readonly width: number;
@@ -72,10 +73,10 @@ export function buildHoleGrid(map: TiledMap): HoleGrid {
 
 // cliffs are walkable on most of the tile surface; only a sub-rectangle (the
 // fall edge, defined per-tile via tiled's collision editor) triggers a hop.
-// each region carries the direction the body should hop in, derived from the
-// sub-rect's position within its tile after applying the cell's flip flags so
-// rotated cliff tiles drop the player off their painted edge rather than
-// always southward.
+// each region carries the direction the body should hop in, taken from the
+// tile's explicit `cliffDirection` property and then rotated by the cell's flip
+// flags so a flipped cliff tile drops the player off its painted edge rather
+// than always in the authored direction.
 export type CliffDirection = "up" | "down" | "left" | "right";
 
 export type CliffRegion = Aabb & {readonly direction: CliffDirection};
@@ -89,12 +90,13 @@ export type CliffGrid = {
 };
 
 export function buildCliffGrid(map: TiledMap): CliffGrid {
-	const tiles = collectTilesWithBoolProperty(map, CLIFF_PROPERTY);
+	const tiles = collectTilesWithStringProperty(map, CLIFF_DIRECTION_PROPERTY);
 	const regions: CliffRegion[] = [];
 	forEachTaggedCellWithGid(map, new Set(tiles.keys()), (col, row, id, flip) => {
-		const tile = tiles.get(id);
-		const objects = tile?.objectgroup?.objects;
-		if (!objects) return;
+		const entry = tiles.get(id);
+		const direction = entry && parseCliffDirection(entry.value);
+		const objects = entry?.tile.objectgroup?.objects;
+		if (!direction || !objects) return;
 		for (const obj of objects) {
 			const rect = objectAabb(obj);
 			if (!rect) continue;
@@ -104,7 +106,7 @@ export function buildCliffGrid(map: TiledMap): CliffGrid {
 				y: row * map.tileheight + oriented.y,
 				width: oriented.width,
 				height: oriented.height,
-				direction: cliffDirectionFromRect(oriented, map.tilewidth, map.tileheight),
+				direction: applyTileFlipToDirection(direction, flip),
 			});
 		}
 	});
@@ -115,6 +117,18 @@ export function buildCliffGrid(map: TiledMap): CliffGrid {
 		tileHeight: map.tileheight,
 		regions,
 	};
+}
+
+function parseCliffDirection(value: string): CliffDirection | null {
+	switch (value) {
+		case "up":
+		case "down":
+		case "left":
+		case "right":
+			return value;
+		default:
+			return null;
+	}
 }
 
 // transforms a tile-local rect through tiled's flip flags. order matches the
@@ -137,20 +151,54 @@ function applyTileFlipToRect(
 	return {x, y, width, height};
 }
 
-// the fall direction is the axis along which the rect's center sits furthest
-// from the tile center: a bottom-half rect hops south, a right-half rect east,
-// etc. ties fall back to south to match the historical default.
-function cliffDirectionFromRect(rect: Aabb, tileWidth: number, tileHeight: number): CliffDirection {
-	const dx = rect.x + rect.width / 2 - tileWidth / 2;
-	const dy = rect.y + rect.height / 2 - tileHeight / 2;
-	if (Math.abs(dy) >= Math.abs(dx)) return dy < 0 ? "up" : "down";
-	return dx < 0 ? "left" : "right";
+// rotates a fall direction through tiled's flip flags, in the same order as
+// applyTileFlipToRect (diagonal transpose, then horizontal, then vertical) so a
+// flipped cliff tile's painted edge and its hop direction stay in agreement.
+// directions are carried as unit vectors through the transform: diagonal swaps
+// the axes, horizontal negates x, vertical negates y.
+export const CLIFF_DIRECTION_VECTORS: Record<CliffDirection, readonly [number, number]> = {
+	up: [0, -1],
+	down: [0, 1],
+	left: [-1, 0],
+	right: [1, 0],
+};
+
+function applyTileFlipToDirection(direction: CliffDirection, flip: TileFlip): CliffDirection {
+	let [x, y] = CLIFF_DIRECTION_VECTORS[direction];
+	if (flip.diagonal) [x, y] = [y, x];
+	if (flip.horizontal) x = -x;
+	if (flip.vertical) y = -y;
+	if (x !== 0) return x < 0 ? "left" : "right";
+	return y < 0 ? "up" : "down";
 }
 
 export function aabbsOverlap(a: Aabb, b: Aabb): boolean {
 	return (
 		a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 	);
+}
+
+// clamps an already swept-resolved move so the body doesn't end up overlapping
+// one extra obstacle that isn't part of the static grid. resolves X then Y in
+// the direction of travel, mirroring moveAabb's axis separation. meant for
+// slow dynamic blockers (e.g. a teleporter pad the body must not re-enter); it
+// isn't a full swept test, so a fast body could tunnel in a single tick.
+export function clampOutOfBox(before: Aabb, after: Aabb, obstacle: Aabb): Aabb {
+	let x = after.x;
+	if (after.x !== before.x) {
+		const probe: Aabb = {x, y: before.y, width: after.width, height: after.height};
+		if (aabbsOverlap(probe, obstacle)) {
+			x = after.x > before.x ? obstacle.x - after.width : obstacle.x + obstacle.width;
+		}
+	}
+	let y = after.y;
+	if (after.y !== before.y) {
+		const probe: Aabb = {x, y, width: after.width, height: after.height};
+		if (aabbsOverlap(probe, obstacle)) {
+			y = after.y > before.y ? obstacle.y - after.height : obstacle.y + obstacle.height;
+		}
+	}
+	return {x, y, width: after.width, height: after.height};
 }
 
 export function aabbOverlapsCliff(box: Aabb, cliffs: CliffGrid): boolean {
@@ -169,10 +217,15 @@ export function findOverlappingCliff(box: Aabb, cliffs: CliffGrid): CliffRegion 
 // stands clear of solid, hole, and cliff. tiles between the cliff edge and the
 // landing (the cliff face itself) are skipped — the body arcs over them. the
 // landing snaps to the tile edge nearest the start so the hop reads as minimal
-// rather than a teleport across the tile. returns null only when no clear tile
-// exists before the map ends.
+// rather than a teleport across the tile. water is landable, but a narrow
+// channel bounded by a facing cliff should be cleared in one hop: the first
+// water tile is kept as a fallback and the scan continues — if the run meets
+// another cliff the hop carries past it, otherwise (wall, hole, map edge) the
+// body drops into the water. returns null only when no landable tile exists
+// before the map ends.
 export function findCliffLanding(
 	grid: SolidGrid,
+	terrain: TerrainGrid | undefined,
 	holes: HoleGrid | undefined,
 	cliffs: CliffGrid,
 	box: Aabb,
@@ -188,15 +241,27 @@ export function findCliffLanding(
 		: Math.floor(start / tileSize) - 1;
 	const limit = horizontal ? grid.width : grid.height;
 	const step = positive ? 1 : -1;
+	let water: Aabb | null = null;
+	let waterMetCliff = false;
 	for (let t = startTile; t >= 0 && t < limit; t += step) {
 		const coord = positive ? t * tileSize : (t + 1) * tileSize - extent;
 		const candidate: Aabb = horizontal ? {...box, x: coord} : {...box, y: coord};
-		if (!isAabbFree(grid, candidate)) continue;
-		if (aabbOverlapsCliff(candidate, cliffs)) continue;
-		if (holes && aabbOverlapsHole(holes, candidate)) continue;
-		return candidate;
+		if (aabbOverlapsCliff(candidate, cliffs)) {
+			if (water) waterMetCliff = true;
+			continue;
+		}
+		if (!isAabbFree(grid, candidate) || (holes && aabbOverlapsHole(holes, candidate))) {
+			if (water) return water;
+			continue;
+		}
+		if (terrain && isSwimTile(terrain, candidate)) {
+			if (waterMetCliff) return candidate;
+			water ??= candidate;
+			continue;
+		}
+		return water && !waterMetCliff ? water : candidate;
 	}
-	return null;
+	return water;
 }
 
 // bitwise-ORs two same-shape grids. used to treat holes as solid during

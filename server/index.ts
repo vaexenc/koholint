@@ -1,22 +1,24 @@
+import {collectSpawnRegions} from "@/game/spawn";
+import {loadTiledMap} from "@/tiled/loadMap";
 import {serve} from "@hono/node-server";
 import {serveStatic} from "@hono/node-server/serve-static";
 import {Hono} from "hono";
-import path from "node:path";
 import {existsSync} from "node:fs";
 import type {Server as HttpServer} from "node:http";
-import {loadTiledMap} from "@/tiled/loadMap";
-import {log} from "./log";
+import path from "node:path";
 import {nodeMapLoaderEnv} from "./loaderEnv";
-import {ResumeStore} from "./resume";
-import {collectSpawnRegions} from "@/game/spawn";
-import {Room} from "./rooms";
+import {log} from "./log";
 import {checkName} from "./profanity";
+import {ResumeStore} from "./resume";
+import {Room} from "./rooms";
 import {CLOSE_SHUTDOWN, WsServer} from "./ws";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? "127.0.0.1";
 const MAP_FILE = "public/maps/overworld-map.json";
-const DATA_DIR = process.env.DATA_DIR ?? "server/data";
+// excluded from the dev watcher (dev:server --ignore) so the 60s resume
+// persist doesn't retrigger a restart.
+const DATA_DIR = "server/data";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? null;
 const DIST_DIR = "dist";
 const RESUME_PERSIST_INTERVAL_MS = 60_000;

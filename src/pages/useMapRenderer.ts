@@ -1,6 +1,7 @@
 import {
 	buildCliffGrid,
 	buildHoleGrid,
+	buildPushGrid,
 	buildSolidGrid,
 	buildTeleporterGrid,
 	buildTerrainGrid,
@@ -40,20 +41,46 @@ const MAX_FRAME_DT = 0.1;
 // as a click (teleport) rather than a drag (pan).
 const CLICK_MAX_TRAVEL_PX = 4;
 
+// nearest world-space point (one axis) the camera can actually pin to the
+// screen anchor: derive the offset that would put `center` at `anchor`, run
+// it through the offset clamp, and convert back to world space. anchor and
+// viewport strip are decoupled because overlay UI (the chat) shrinks the
+// coverage strip without moving the point the followed character should sit at.
+function clampFollowCenter(
+	center: number,
+	scale: number,
+	mapPixels: number,
+	viewportStart: number,
+	viewportEnd: number,
+	anchor: number
+): number {
+	const offset = clampCameraOffset(
+		anchor - center * scale,
+		scale,
+		mapPixels,
+		viewportStart,
+		viewportEnd
+	);
+	return (anchor - offset) / scale;
+}
+
 // constrain a camera offset (one axis) so the scaled map always covers the
-// viewport, hiding any out-of-map area. when the map is smaller than the
-// viewport on this axis it can't cover it, so center it instead.
+// screen strip [viewportStart, viewportEnd], hiding any out-of-map area there.
+// when the map is smaller than the strip on this axis it can't cover it, so
+// center it in the strip instead.
 function clampCameraOffset(
 	offset: number,
 	scale: number,
 	mapPixels: number,
-	viewport: number
+	viewportStart: number,
+	viewportEnd: number
 ): number {
 	const scaled = mapPixels * scale;
-	if (scaled <= viewport) return (viewport - scaled) / 2;
-	// offset 0 aligns the map's near edge to the viewport's; the most negative
-	// offset aligns the far edges. anything outside this range exposes the void.
-	return Math.min(0, Math.max(viewport - scaled, offset));
+	const viewport = viewportEnd - viewportStart;
+	if (scaled <= viewport) return viewportStart + (viewport - scaled) / 2;
+	// offset viewportStart aligns the map's near edge to the strip's; the
+	// smallest offset aligns the far edges. anything outside exposes the void.
+	return Math.min(viewportStart, Math.max(viewportEnd - scaled, offset));
 }
 
 export type MapLoadState =
@@ -104,6 +131,12 @@ export type UseMapRendererParams = {
 	mapUrl: string;
 	follow: boolean;
 	debug: boolean;
+	// CSS pixels along each window side edge covered by overlay UI (the chat
+	// panel). edge clamping treats only the remaining strip as the viewport, so
+	// the map can pan out from under the overlay at that edge; centering still
+	// anchors to the full window.
+	insetLeft?: number;
+	insetRight?: number;
 	init: (ctx: MapRendererInitContext) => Promise<MapRendererSetup> | MapRendererSetup;
 	// advance simulation by dtMs; return the interpolation alpha (0..1) used
 	// when drawing characters between their previous and current poses.
@@ -150,6 +183,8 @@ export function useMapRenderer({
 	mapUrl,
 	follow,
 	debug,
+	insetLeft = 0,
+	insetRight = 0,
 	init,
 	step,
 	onTileClick,
@@ -184,6 +219,11 @@ export function useMapRenderer({
 	// reading the latest values without re-running the whole map load.
 	const followRef = useRef(follow);
 	const debugRef = useRef(debug);
+	const insetsRef = useRef({left: insetLeft, right: insetRight});
+	// the insets the camera math actually uses; spring toward insetsRef in the
+	// render loop so showing/hiding/resizing/side-switching the overlay glides
+	// the camera instead of snapping it.
+	const easedInsetsRef = useRef({left: insetLeft, right: insetRight});
 	const initRef = useRef(init);
 	const stepRef = useRef(step);
 	const onTileClickRef = useRef(onTileClick);
@@ -193,6 +233,9 @@ export function useMapRenderer({
 	useEffect(() => {
 		debugRef.current = debug;
 	}, [debug]);
+	useEffect(() => {
+		insetsRef.current = {left: insetLeft, right: insetRight};
+	}, [insetLeft, insetRight]);
 	useEffect(() => {
 		initRef.current = init;
 	});
@@ -211,6 +254,14 @@ export function useMapRenderer({
 	const [zoom, setZoom] = useState(INITIAL_SCALE);
 	const [cursor, setCursor] = useState<{x: number; y: number} | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
+
+	// x-axis strip of the window not covered by the side overlays — the region
+	// the camera clamps the map to cover. end is kept >= start for degenerate
+	// windows narrower than the overlays.
+	const viewportXStrip = () => {
+		const {left, right} = easedInsetsRef.current;
+		return {start: left, end: Math.max(left, window.innerWidth - right)};
+	};
 
 	useEffect(() => {
 		let cancelled = false;
@@ -245,6 +296,7 @@ export function useMapRenderer({
 					holes: buildHoleGrid(map),
 					cliffs: buildCliffGrid(map),
 					teleporters: buildTeleporterGrid(map),
+					push: buildPushGrid(map),
 				});
 				const renderer = new CharacterRenderer();
 				const setup = await initRef.current({
@@ -274,6 +326,8 @@ export function useMapRenderer({
 				// point if init supplied one, otherwise on the map's geometric
 				// center. set current and target to the same value so the spring
 				// has nothing to animate at load.
+				easedInsetsRef.current = {...insetsRef.current};
+				const initialVpX = viewportXStrip();
 				const focus = setup.initialFocus;
 				const initialOffsetX = clampCameraOffset(
 					focus
@@ -281,7 +335,8 @@ export function useMapRenderer({
 						: (window.innerWidth - mapPixelWidth * INITIAL_SCALE) / 2,
 					INITIAL_SCALE,
 					mapPixelWidth,
-					window.innerWidth
+					initialVpX.start,
+					initialVpX.end
 				);
 				const initialOffsetY = clampCameraOffset(
 					focus
@@ -289,6 +344,7 @@ export function useMapRenderer({
 						: (window.innerHeight - mapPixelHeight * INITIAL_SCALE) / 2,
 					INITIAL_SCALE,
 					mapPixelHeight,
+					0,
 					window.innerHeight
 				);
 				cameraRef.current = {
@@ -335,6 +391,18 @@ export function useMapRenderer({
 							? 0
 							: Math.min((now - lastFrameTime) / 1000, MAX_FRAME_DT);
 					lastFrameTime = now;
+					const k = dt > 0 ? 1 - Math.exp(-CAMERA_SMOOTHING * dt) : 0;
+
+					// ease the overlay insets with the same spring as the camera so a
+					// chat show/hide/resize/side-switch moves the clamp limits — and
+					// with them the camera — smoothly instead of snapping.
+					const eased = easedInsetsRef.current;
+					const insets = insetsRef.current;
+					eased.left += (insets.left - eased.left) * k;
+					eased.right += (insets.right - eased.right) * k;
+					if (Math.abs(insets.left - eased.left) < 0.25) eased.left = insets.left;
+					if (Math.abs(insets.right - eased.right) < 0.25) eased.right = insets.right;
+					const vpX = viewportXStrip();
 
 					// step the simulation first so the camera spring chases this
 					// frame's freshly stepped follow target with zero extra latency.
@@ -359,17 +427,18 @@ export function useMapRenderer({
 						cam.targetOffsetX,
 						cam.targetScale,
 						mapPixelWidth,
-						window.innerWidth
+						vpX.start,
+						vpX.end
 					);
 					cam.targetOffsetY = clampCameraOffset(
 						cam.targetOffsetY,
 						cam.targetScale,
 						mapPixelHeight,
+						0,
 						window.innerHeight
 					);
 
 					if (dt > 0) {
-						const k = 1 - Math.exp(-CAMERA_SMOOTHING * dt);
 						cam.scale += (cam.targetScale - cam.scale) * k;
 						// snap once we're within sub-pixel / sub-percent distance so
 						// the spring doesn't tail off into floating-point noise.
@@ -390,8 +459,31 @@ export function useMapRenderer({
 								x: (window.innerWidth / 2 - cam.offsetX) / cam.scale,
 								y: (window.innerHeight / 2 - cam.offsetY) / cam.scale,
 							};
-							focus.x += (followCenter.x - focus.x) * k;
-							focus.y += (followCenter.y - focus.y) * k;
+							// ease toward the nearest center the edge clamp can honor —
+							// aiming at the raw player center makes the offset slam into
+							// the clamp mid-flight near a map edge instead of decelerating.
+							focus.x +=
+								(clampFollowCenter(
+									followCenter.x,
+									cam.scale,
+									mapPixelWidth,
+									vpX.start,
+									vpX.end,
+									window.innerWidth / 2
+								) -
+									focus.x) *
+								k;
+							focus.y +=
+								(clampFollowCenter(
+									followCenter.y,
+									cam.scale,
+									mapPixelHeight,
+									0,
+									window.innerHeight,
+									window.innerHeight / 2
+								) -
+									focus.y) *
+								k;
 							followFocusRef.current = focus;
 							cam.offsetX = window.innerWidth / 2 - focus.x * cam.scale;
 							cam.offsetY = window.innerHeight / 2 - focus.y * cam.scale;
@@ -411,8 +503,10 @@ export function useMapRenderer({
 								// spring settles — the post-zoom shift.
 								cam.offsetX = anchor.screenX - anchor.worldX * cam.scale;
 								cam.offsetY = anchor.screenY - anchor.worldY * cam.scale;
-								cam.targetOffsetX = anchor.screenX - anchor.worldX * cam.targetScale;
-								cam.targetOffsetY = anchor.screenY - anchor.worldY * cam.targetScale;
+								cam.targetOffsetX =
+									anchor.screenX - anchor.worldX * cam.targetScale;
+								cam.targetOffsetY =
+									anchor.screenY - anchor.worldY * cam.targetScale;
 								if (cam.scale === cam.targetScale) zoomAnchorRef.current = null;
 							} else {
 								cam.offsetX += (cam.targetOffsetX - cam.offsetX) * k;
@@ -432,12 +526,14 @@ export function useMapRenderer({
 						cam.offsetX,
 						cam.scale,
 						mapPixelWidth,
-						window.innerWidth
+						vpX.start,
+						vpX.end
 					);
 					cam.offsetY = clampCameraOffset(
 						cam.offsetY,
 						cam.scale,
 						mapPixelHeight,
+						0,
 						window.innerHeight
 					);
 
@@ -559,8 +655,9 @@ export function useMapRenderer({
 			let nextX = drag.startOffsetX + (e.clientX - drag.startX);
 			let nextY = drag.startOffsetY + (e.clientY - drag.startY);
 			if (size) {
-				nextX = clampCameraOffset(nextX, cam.scale, size.width, window.innerWidth);
-				nextY = clampCameraOffset(nextY, cam.scale, size.height, window.innerHeight);
+				const vpX = viewportXStrip();
+				nextX = clampCameraOffset(nextX, cam.scale, size.width, vpX.start, vpX.end);
+				nextY = clampCameraOffset(nextY, cam.scale, size.height, 0, window.innerHeight);
 			}
 			// drag is direct manipulation: write current and target together
 			// so the map tracks the cursor 1:1 with no smoothing lag.
@@ -617,13 +714,14 @@ export function useMapRenderer({
 		};
 		zoomAnchorRef.current = anchor;
 		const size = mapSizeRef.current;
+		const vpX = viewportXStrip();
 		const offsetX = anchor.screenX - anchor.worldX * newScale;
 		const offsetY = anchor.screenY - anchor.worldY * newScale;
 		cam.targetOffsetX = size
-			? clampCameraOffset(offsetX, newScale, size.width, window.innerWidth)
+			? clampCameraOffset(offsetX, newScale, size.width, vpX.start, vpX.end)
 			: offsetX;
 		cam.targetOffsetY = size
-			? clampCameraOffset(offsetY, newScale, size.height, window.innerHeight)
+			? clampCameraOffset(offsetY, newScale, size.height, 0, window.innerHeight)
 			: offsetY;
 	};
 
