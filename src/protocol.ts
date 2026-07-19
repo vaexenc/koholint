@@ -61,6 +61,12 @@ export type CoalescedInput = {
 	readonly input: CharacterInput;
 };
 
+// hard cap on inputs carried by a single `input` message. the client buffers at
+// most ~30s of ticks (INPUT_MAX_AGE_TICKS) and every batch is redundant, so a
+// well-behaved client never approaches this; the server rejects anything larger
+// as malformed, bounding the per-message work an attacker can impose.
+export const MAX_INPUTS_PER_MESSAGE = 1024;
+
 // --- Client -> Server ----------------------------------------------------
 
 export type ClientHello = {

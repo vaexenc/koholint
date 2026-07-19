@@ -14,6 +14,7 @@ import {World} from "@/game/world";
 import {
 	encodeAnimByte,
 	encodeSnapshot,
+	MAX_INPUTS_PER_MESSAGE,
 	type ChatMessage,
 	type CoalescedInput,
 	type ConnId,
@@ -39,6 +40,11 @@ export const TICK_HZ = 30;
 export const SNAPSHOT_HZ = 15;
 export const CHAT_BACKLOG_SIZE = 200;
 export const MAX_INPUT_AGE_TICKS = TICK_HZ * 30;
+// clients stamp inputs against their own estimate of the server clock, so a
+// small lead over serverTick is normal (latency + clock skew). accept up to a
+// second of lookahead; ticks beyond that are rejected as junk that would
+// otherwise sit in pendingInputs unconsumed.
+export const MAX_INPUT_LOOKAHEAD_TICKS = TICK_HZ;
 
 export type Session = {
 	readonly connId: ConnId;
@@ -180,12 +186,18 @@ export class Room {
 
 	queueInputs(connId: ConnId, ackTick: number, inputs: ReadonlyArray<CoalescedInput>): void {
 		const session = this.sessions.get(connId);
-		if (!session) return;
-		// drop client acks that lag behind what we've already applied: nothing
-		// new to do for those ticks, the pendingInputs entry is gone.
+		if (!session || !Number.isInteger(ackTick)) return;
+		// bound the acceptance window on both sides: drop acks that lag behind
+		// what we've already applied (a non-finite ackTick can't slip a NaN into
+		// the floor now), and reject far-future ticks that would never be
+		// consumed and would pile up unswept. cap the batch length so a single
+		// frame can't inject an unbounded number of entries.
 		const floor = Math.max(ackTick, this.serverTick - MAX_INPUT_AGE_TICKS);
-		for (const {tick, input} of inputs) {
-			if (tick < floor) continue;
+		const ceil = this.serverTick + MAX_INPUT_LOOKAHEAD_TICKS;
+		const limit = Math.min(inputs.length, MAX_INPUTS_PER_MESSAGE);
+		for (let i = 0; i < limit; i++) {
+			const {tick, input} = inputs[i];
+			if (tick < floor || tick > ceil) continue;
 			session.pendingInputs.set(tick, input);
 		}
 	}
@@ -257,18 +269,20 @@ export class Room {
 
 	private stepOnce(): void {
 		const dtSec = this.tickIntervalMs / 1000;
+		// queueInputs keeps every pending key within
+		// [serverTick - MAX_INPUT_AGE_TICKS, serverTick + lookahead]. serverTick
+		// advances one at a time, so consuming the current tick and dropping the
+		// single key that just fell off the trailing edge keeps the map bounded in
+		// O(1) per tick — no full-map rescan, which an injected backlog used to tax.
+		const agedOutTick = this.serverTick - MAX_INPUT_AGE_TICKS - 1;
 		for (const session of this.sessions.values()) {
 			const input = session.pendingInputs.get(this.serverTick);
 			if (input) {
 				session.inputProvider.setInput(input);
 				session.lastAppliedClientTick = this.serverTick;
-				session.pendingInputs.delete(this.serverTick);
 			}
-			// drop stale entries the client never re-acked
-			for (const tick of session.pendingInputs.keys()) {
-				if (tick < this.serverTick - MAX_INPUT_AGE_TICKS)
-					session.pendingInputs.delete(tick);
-			}
+			session.pendingInputs.delete(this.serverTick);
+			session.pendingInputs.delete(agedOutTick);
 		}
 		this.world.step(this.serverTick, dtSec);
 		// clear inputs that are spent so the StaticInputProvider doesn't keep

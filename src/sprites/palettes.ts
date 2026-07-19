@@ -76,6 +76,12 @@ export const PALETTES: readonly NamedPalette[] = [
 	},
 ];
 
+const PALETTE_ID_SET: ReadonlySet<string> = new Set(PALETTES.map((p) => p.id));
+
+export function isKnownPaletteId(id: string): boolean {
+	return PALETTE_ID_SET.has(id);
+}
+
 export function resolvePaletteSwap(paletteId: string | null): SpritePalette | undefined {
 	if (!paletteId) return undefined;
 	return PALETTES.find((p) => p.id === paletteId)?.palette;

@@ -5,6 +5,11 @@ import path from "node:path";
 import {log} from "./log";
 
 export const RESUME_TTL_MS = 24 * 60 * 60 * 1000;
+// hard ceiling on resume slots. bounds memory and the size of resume.json
+// (rewritten wholesale on every persist) so connection churn — malicious or
+// organic — can't grow the table without limit before the 24h TTL sweeps it.
+// the least-recently-touched slot is evicted once the cap is reached.
+export const MAX_RESUME_SLOTS = 10_000;
 
 export type ResumeSlot = {
 	resumeToken: string;
@@ -85,13 +90,24 @@ export class ResumeStore {
 	}
 
 	upsert(slot: ResumeSlot): void {
+		// re-key so the entry moves to the most-recent end of the Map's iteration
+		// order; eviction then sheds the least-recently-touched slot in O(1),
+		// avoiding a full scan on every insert under churn.
+		this.byToken.delete(slot.resumeToken);
 		this.byToken.set(slot.resumeToken, slot);
+		if (this.byToken.size > MAX_RESUME_SLOTS) {
+			const oldest = this.byToken.keys().next().value;
+			if (oldest !== undefined) this.byToken.delete(oldest);
+		}
 	}
 
 	touch(token: string, patch: Partial<Omit<ResumeSlot, "resumeToken">>): void {
 		const slot = this.byToken.get(token);
 		if (!slot) return;
 		Object.assign(slot, patch, {lastSeenMs: Date.now()});
+		// keep Map order aligned with recency for the LRU eviction in upsert().
+		this.byToken.delete(token);
+		this.byToken.set(token, slot);
 	}
 }
 

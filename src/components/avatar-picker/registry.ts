@@ -1,3 +1,4 @@
+import {AVATAR_IDS, type AvatarId} from "@/components/avatar-picker/avatarIds";
 import {BoarblinSpriteAsset} from "@/sprites/assets/boarblin";
 import {BowwowSpriteAsset} from "@/sprites/assets/bowwow";
 import {BunnySpriteAsset} from "@/sprites/assets/bunny";
@@ -20,7 +21,7 @@ import {loadSpriteImage} from "@/sprites/imageCache";
 import type {SpriteAsset} from "@/types";
 
 export type Avatar = {
-	id: string;
+	id: AvatarId;
 	name: string;
 	// substituted for `name` in generated usernames when the display name
 	// would make them too long.
@@ -28,34 +29,36 @@ export type Avatar = {
 	sprite: SpriteAsset;
 };
 
-export const AVATARS: readonly Avatar[] = [
-	// friendly — link's awakening
-	{id: "link", name: "Link", sprite: LinkSpriteAsset},
-	{id: "marin", name: "Marin", sprite: MarinSpriteAsset},
-	{id: "tarin", name: "Tarin", sprite: TarinSpriteAsset},
-	{id: "bunny", name: "Bunny", sprite: BunnySpriteAsset},
-	{id: "bowwow", name: "BowWow", sprite: BowwowSpriteAsset},
-	// friendly — oracle games
-	{id: "din", name: "Din", sprite: DinSpriteAsset},
-	{id: "nayru", name: "Nayru", sprite: NayruSpriteAsset},
-	{id: "ralph", name: "Ralph", sprite: RalphSpriteAsset},
-	{id: "maple", name: "Maple", sprite: MapleSpriteAsset},
-	{id: "impa", name: "Impa", sprite: ImpaSpriteAsset},
-	{id: "zelda", name: "Zelda", sprite: ZeldaSpriteAsset},
-	// enemies
-	{id: "octorok", name: "Octorok", sprite: OctorokSpriteAsset},
-	{id: "moblin", name: "Moblin", sprite: MoblinSpriteAsset},
-	{id: "boarblin", name: "Boarblin", sprite: BoarblinSpriteAsset},
-	{id: "darknut", name: "Darknut", sprite: DarknutSpriteAsset},
-	{
-		id: "shrouded-stalfos",
+type AvatarMeta = Omit<Avatar, "id">;
+
+// id -> sprite/display metadata. keyed by AvatarId so the compiler forces this
+// map and AVATAR_IDS to stay in lockstep: a missing or extra id is a type error.
+const AVATAR_META: Record<AvatarId, AvatarMeta> = {
+	link: {name: "Link", sprite: LinkSpriteAsset},
+	marin: {name: "Marin", sprite: MarinSpriteAsset},
+	tarin: {name: "Tarin", sprite: TarinSpriteAsset},
+	bunny: {name: "Bunny", sprite: BunnySpriteAsset},
+	bowwow: {name: "BowWow", sprite: BowwowSpriteAsset},
+	din: {name: "Din", sprite: DinSpriteAsset},
+	nayru: {name: "Nayru", sprite: NayruSpriteAsset},
+	ralph: {name: "Ralph", sprite: RalphSpriteAsset},
+	maple: {name: "Maple", sprite: MapleSpriteAsset},
+	impa: {name: "Impa", sprite: ImpaSpriteAsset},
+	zelda: {name: "Zelda", sprite: ZeldaSpriteAsset},
+	octorok: {name: "Octorok", sprite: OctorokSpriteAsset},
+	moblin: {name: "Moblin", sprite: MoblinSpriteAsset},
+	boarblin: {name: "Boarblin", sprite: BoarblinSpriteAsset},
+	darknut: {name: "Darknut", sprite: DarknutSpriteAsset},
+	"shrouded-stalfos": {
 		name: "Shrouded Stalfos",
 		shortName: "Stalfos",
 		sprite: ShroudedStalfosSpriteAsset,
 	},
-	{id: "shyguy", name: "Shy Guy", sprite: ShyguySpriteAsset},
-	{id: "ghini", name: "Ghini", sprite: GhiniSpriteAsset},
-];
+	shyguy: {name: "Shy Guy", sprite: ShyguySpriteAsset},
+	ghini: {name: "Ghini", sprite: GhiniSpriteAsset},
+};
+
+export const AVATARS: readonly Avatar[] = AVATAR_IDS.map((id) => ({id, ...AVATAR_META[id]}));
 
 export function resolveAvatarSprite(avatarId: string): SpriteAsset {
 	return (AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0]).sprite;

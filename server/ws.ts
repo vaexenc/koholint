@@ -2,6 +2,7 @@ import {NEUTRAL_INPUT} from "@/game/types";
 import {
 	type ChatMessage,
 	type ClientMessage,
+	type CoalescedInput,
 	type ConnId,
 	type Profile,
 	type ServerMessage,
@@ -12,6 +13,7 @@ import type {IncomingMessage, Server} from "node:http";
 import type {Duplex} from "node:stream";
 import {WebSocketServer, type WebSocket} from "ws";
 import {log} from "./log";
+import {parseClientMessage} from "./parseMessage";
 import {censorProfanity, checkName} from "./profanity";
 import type {ResumeStore} from "./resume";
 import {Room, type RoomListener, type Session} from "./rooms";
@@ -19,8 +21,22 @@ import {Room, type RoomListener, type Session} from "./rooms";
 const HELLO_TIMEOUT_MS = 5000;
 const CHAT_MAX_PER_SECOND = 3;
 const CHAT_MAX_CHARS = 500;
+// inputs flush once per client render frame, so high-refresh displays legitimately
+// exceed the 30Hz tick rate; sized above 240Hz. batches are redundant (each carries
+// all unacked inputs) so a dropped flush loses nothing — this only caps a flood.
+const INPUT_MAX_PER_SECOND = 250;
 const PING_INTERVAL_MS = 15_000;
 const PONG_TIMEOUT_MS = 30_000;
+
+// largest control frame we accept before parse. sized to the biggest legitimate
+// client message — a maxed, redundant input batch (~MAX_INPUTS_PER_MESSAGE
+// coalesced entries ≈ 70 KiB) — with headroom; anything larger is closed by ws
+// (code 1009) rather than buffered. keeps 100 MiB frames off the parse path.
+const WS_MAX_PAYLOAD_BYTES = 128 * 1024;
+// concurrency backstops enforced at the upgrade, before a socket is tracked.
+// mainly relevant once HOST is widened past loopback; tune per deployment.
+const MAX_TOTAL_CONNECTIONS = 1024;
+const MAX_CONNECTIONS_PER_IP = 32;
 
 // close codes carried in the ws CloseEvent — see HANDOFF.md.
 const CLOSE_NORMAL = 1000;
@@ -38,6 +54,7 @@ type Connection = {
 	connId: ConnId;
 	session: Session;
 	chatTimestamps: number[];
+	inputTimestamps: number[];
 	lastPongAt: number;
 };
 
@@ -58,13 +75,15 @@ export class WsServer {
 	private readonly adminToken: string | null;
 	private readonly pending = new Set<Pending>();
 	private readonly byConnId = new Map<ConnId, Connection>();
+	private readonly connectionsByIp = new Map<string, number>();
+	private totalConnections = 0;
 	private readonly pingTimer: NodeJS.Timeout;
 
 	constructor(opts: WsServerOpts) {
 		this.room = opts.room;
 		this.resume = opts.resume;
 		this.adminToken = opts.adminToken;
-		this.wss = new WebSocketServer({noServer: true});
+		this.wss = new WebSocketServer({noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES});
 		opts.httpServer.on("upgrade", (req, socket, head) => this.onUpgrade(req, socket, head));
 		this.wss.on("connection", (socket) => this.onConnection(socket));
 		this.room.addListener(this.makeListener());
@@ -101,8 +120,36 @@ export class WsServer {
 			socket.destroy();
 			return;
 		}
+		const ip = clientIp(req);
+		if (
+			this.totalConnections >= MAX_TOTAL_CONNECTIONS ||
+			(this.connectionsByIp.get(ip) ?? 0) >= MAX_CONNECTIONS_PER_IP
+		) {
+			log.warn(`ws: connection cap reached, rejecting ${ip}`);
+			socket.destroy();
+			return;
+		}
+		this.trackConnection(ip, socket);
 		this.wss.handleUpgrade(req, socket, head, (ws) => {
 			this.wss.emit("connection", ws, req);
+		});
+	}
+
+	// count every accepted upgrade against the global + per-IP caps and release
+	// the slot when the underlying socket closes — whether the handshake fails,
+	// the connection is dropped pre-hello, or a live session leaves. tracking the
+	// raw socket (which the ws instance keeps using) covers all three.
+	private trackConnection(ip: string, socket: Duplex): void {
+		this.totalConnections++;
+		this.connectionsByIp.set(ip, (this.connectionsByIp.get(ip) ?? 0) + 1);
+		let released = false;
+		socket.once("close", () => {
+			if (released) return;
+			released = true;
+			this.totalConnections--;
+			const remaining = (this.connectionsByIp.get(ip) ?? 1) - 1;
+			if (remaining <= 0) this.connectionsByIp.delete(ip);
+			else this.connectionsByIp.set(ip, remaining);
 		});
 	}
 
@@ -133,7 +180,7 @@ export class WsServer {
 	}
 
 	private onPendingMessage(entry: Pending, raw: string): void {
-		const msg = safeParseJson(raw);
+		const msg = parseClientMessage(raw);
 		if (!msg || msg.type !== "hello") {
 			log.warn("ws: non-hello first frame, closing");
 			entry.socket.close(CLOSE_PROTOCOL, "hello first");
@@ -141,7 +188,12 @@ export class WsServer {
 		}
 		clearTimeout(entry.helloTimer);
 		this.pending.delete(entry);
-		this.handleHello(entry.socket, msg);
+		try {
+			this.handleHello(entry.socket, msg);
+		} catch (err) {
+			log.error("ws: hello handler error:", err);
+			closeQuietly(entry.socket, CLOSE_PROTOCOL, "internal error");
+		}
 	}
 
 	private handleHello(socket: WebSocket, msg: ClientMessage): void {
@@ -201,6 +253,7 @@ export class WsServer {
 			connId: session.connId,
 			session,
 			chatTimestamps: [],
+			inputTimestamps: [],
 			lastPongAt: Date.now(),
 		};
 		this.byConnId.set(session.connId, conn);
@@ -243,9 +296,14 @@ export class WsServer {
 		conn.socket.removeAllListeners("message");
 		conn.socket.on("message", (data, isBinary) => {
 			if (isBinary) return;
-			const msg = safeParseJson(data.toString());
+			const msg = parseClientMessage(data.toString());
 			if (!msg) return;
-			this.dispatch(conn, msg);
+			try {
+				this.dispatch(conn, msg);
+			} catch (err) {
+				log.error(`ws: dispatch error for ${conn.connId}:`, err);
+				closeQuietly(conn.socket, CLOSE_PROTOCOL, "internal error");
+			}
 		});
 		conn.socket.on("close", () => this.dropConnection(conn, "client close", "leave"));
 		conn.socket.on("error", (err) => log.warn(`ws: conn ${conn.connId} error:`, err));
@@ -263,7 +321,7 @@ export class WsServer {
 			case "chat":
 				return this.onChat(conn, msg.text);
 			case "input":
-				this.room.queueInputs(conn.connId, msg.ackTick, msg.inputs);
+				this.onInput(conn, msg.ackTick, msg.inputs);
 				return;
 			case "teleport":
 				this.onTeleport(conn, msg.x, msg.y);
@@ -302,6 +360,18 @@ export class WsServer {
 			profile: next,
 			color: result.color,
 		});
+	}
+
+	private onInput(
+		conn: Connection,
+		ackTick: number,
+		inputs: ReadonlyArray<CoalescedInput>
+	): void {
+		const now = Date.now();
+		conn.inputTimestamps = conn.inputTimestamps.filter((t) => now - t < 1000);
+		if (conn.inputTimestamps.length >= INPUT_MAX_PER_SECOND) return;
+		conn.inputTimestamps.push(now);
+		this.room.queueInputs(conn.connId, ackTick, inputs);
 	}
 
 	private onChat(conn: Connection, rawText: string): void {
@@ -429,13 +499,17 @@ function systemMessage(text: string): ChatMessage {
 	return {id: randomUUID(), kind: "system", text, timestamp: Date.now()};
 }
 
-function safeParseJson(raw: string): ClientMessage | null {
+function clientIp(req: IncomingMessage): string {
+	// direct peer address only — X-Forwarded-For is attacker-spoofable and there
+	// is no trusted proxy in this deployment, so honoring it would defeat the cap.
+	return req.socket.remoteAddress ?? "unknown";
+}
+
+function closeQuietly(socket: WebSocket, code: number, reason: string): void {
 	try {
-		const parsed = JSON.parse(raw);
-		if (parsed && typeof parsed === "object" && typeof parsed.type === "string") return parsed;
-		return null;
+		socket.close(code, reason);
 	} catch {
-		return null;
+		// noop
 	}
 }
 

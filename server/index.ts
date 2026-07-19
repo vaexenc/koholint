@@ -96,6 +96,13 @@ async function main(): Promise<void> {
 			server.close(() => process.exit(0));
 		}, SHUTDOWN_GRACE_MS).unref();
 	};
+	// last-resort barriers so a stray throw or rejection from a socket callback
+	// or timer can't take the whole process — and every connected player — down.
+	// per-message failures are already contained by try/catch at the ws dispatch;
+	// this only catches what slips past. registered after boot so a boot failure
+	// still exits via main().catch below.
+	process.on("uncaughtException", (err) => log.error("runtime: uncaughtException:", err));
+	process.on("unhandledRejection", (reason) => log.error("runtime: unhandledRejection:", reason));
 	process.on("SIGTERM", () => void shutdown("SIGTERM"));
 	process.on("SIGINT", () => void shutdown("SIGINT"));
 	log.info(`boot: ws close code on shutdown = ${CLOSE_SHUTDOWN}`);
