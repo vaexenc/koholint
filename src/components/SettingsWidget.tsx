@@ -1,37 +1,89 @@
-import {HUD_POPOVER} from "@/components/hudPill";
 import {IconWidgetButton} from "@/components/IconWidgetButton";
+import {MovementKeybinds} from "@/components/MovementKeybinds";
 import {Checkbox} from "@/components/ui/checkbox";
-import {Popover, PopoverContent, PopoverTrigger} from "@/components/ui/popover";
+import {
+	Dialog,
+	DialogContent,
+	DialogHeader,
+	DialogTitle,
+	DialogTrigger,
+} from "@/components/ui/dialog";
 import {Tooltip, TooltipContent, TooltipTrigger} from "@/components/ui/tooltip";
-import {cn} from "@/lib/utils";
+import type {KeyBindings} from "@/game";
+import {useHasCoarsePointer} from "@/lib/useMediaQuery";
 import {Settings} from "lucide-react";
 import {Children, useState, type ReactNode} from "react";
 
-// gear popover holding the page's quick settings.
-export function SettingsWidget({children}: {children: ReactNode}) {
+// gear button opening the settings modal: the page's quick toggles (if any)
+// plus the movement config (click-to-move, keybinds), which every page gets.
+export function SettingsWidget({
+	bindings,
+	onBindingsChange,
+	clickToMove,
+	onClickToMoveChange,
+	onOpenChange,
+	children,
+}: {
+	bindings: KeyBindings;
+	onBindingsChange: (next: KeyBindings) => void;
+	clickToMove: boolean;
+	onClickToMoveChange: (next: boolean) => void;
+	// lets the page react to the modal opening, e.g. to pause player movement.
+	onOpenChange?: (open: boolean) => void;
+	children?: ReactNode;
+}) {
 	const [open, setOpen] = useState(false);
-	// hide the gear entirely when every setting is gated out (e.g. online and
-	// not admin), so there's no button that opens an empty popover.
-	if (Children.toArray(children).length === 0) return null;
+	// the movement config assumes a mouse and hardware keyboard; touch-primary
+	// devices always move by hold-to-walk (the toggle doesn't apply), and key
+	// capture couldn't even be cancelled without an Esc key — so they get
+	// neither.
+	const showMovementConfig = !useHasCoarsePointer();
+	const handleOpenChange = (next: boolean) => {
+		setOpen(next);
+		onOpenChange?.(next);
+	};
+	// gated-out toggles arrive as false/null children; drop them so an empty
+	// toggle group doesn't render as a stray grid row.
+	const toggles = Children.toArray(children);
+	// hide the gear entirely when nothing would be left in the modal, so there's
+	// no button that opens an empty dialog.
+	if (toggles.length === 0 && !showMovementConfig) return null;
 	return (
-		<Popover open={open} onOpenChange={setOpen}>
+		<Dialog open={open} onOpenChange={handleOpenChange}>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<PopoverTrigger asChild>
+					<DialogTrigger asChild>
 						<IconWidgetButton label="settings">
 							<Settings />
 						</IconWidgetButton>
-					</PopoverTrigger>
+					</DialogTrigger>
 				</TooltipTrigger>
 				<TooltipContent side="top">Settings</TooltipContent>
 			</Tooltip>
-			<PopoverContent
-				sideOffset={4}
-				className={cn(HUD_POPOVER, "flex w-max flex-col gap-2.5 p-2.5")}
-			>
-				{children}
-			</PopoverContent>
-		</Popover>
+			<DialogContent className="select-none sm:max-w-sm">
+				<DialogHeader>
+					<DialogTitle className="flex items-center gap-2 text-lg">
+						<Settings className="h-5 w-5 shrink-0" />
+						Settings
+					</DialogTitle>
+				</DialogHeader>
+				{toggles.length > 0 || showMovementConfig ? (
+					<div className="flex flex-col gap-2.5">
+						{toggles}
+						{showMovementConfig && (
+							<SettingsCheckbox
+								checked={clickToMove}
+								onChange={onClickToMoveChange}
+								label="Click to move"
+							/>
+						)}
+					</div>
+				) : null}
+				{showMovementConfig && (
+					<MovementKeybinds bindings={bindings} onChange={onBindingsChange} />
+				)}
+			</DialogContent>
+		</Dialog>
 	);
 }
 

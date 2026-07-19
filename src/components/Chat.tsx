@@ -357,7 +357,7 @@ function ChatSettingsPopover({settings, onChange}: ChatSettingsPopoverProps) {
 				</PopoverTrigger>
 				<TooltipContent side="top">Settings</TooltipContent>
 			</Tooltip>
-			<PopoverContent side="top" align="start" className="w-auto">
+			<PopoverContent side="top" align="start" className="w-auto select-none">
 				<div className="grid grid-cols-[auto_auto] items-center gap-x-3 gap-y-2 text-xs">
 					<span className="text-muted-foreground">timestamps</span>
 					<ToggleGroup

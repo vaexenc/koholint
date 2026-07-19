@@ -1,3 +1,4 @@
+import {COARSE_POINTER_QUERY} from "@/lib/pointerType";
 import {useCallback, useSyncExternalStore} from "react";
 
 export function useMediaQuery(query: string): boolean {
@@ -17,4 +18,8 @@ export function useMediaQuery(query: string): boolean {
 // keep in sync with the `sm:` classes on those components.
 export function useIsSmallScreen(): boolean {
 	return !useMediaQuery("(min-width: 40rem)");
+}
+
+export function useHasCoarsePointer(): boolean {
+	return useMediaQuery(COARSE_POINTER_QUERY);
 }

@@ -9,16 +9,26 @@ import {ProfileWidget} from "@/components/ProfileWidget";
 import {SettingsCheckbox, SettingsWidget} from "@/components/SettingsWidget";
 import {
 	collectSpawnRegions,
+	collisionCenter,
+	CompositeInputProvider,
 	createBasicCharacter,
+	DEFAULT_KEY_BINDINGS,
 	DEFAULT_TICK_RATE_HZ,
 	GameClock,
 	KeyboardInputProvider,
+	PointerSteerInputProvider,
 	resolveCharacterCollision,
 	sampleSpawnOrCenter,
 	type BasicCharacter,
+	type KeyBindings,
 	type World,
 } from "@/game";
 import {hasAdminToken} from "@/lib/adminToken";
+import {
+	CLICK_TO_MOVE_KEY,
+	MOVEMENT_BINDINGS_KEY,
+	sanitizeMovementBindings,
+} from "@/lib/movementBindings";
 import {handOffPlayerPose, loadPlayerPose, savePlayerPose, takePlayerPose} from "@/lib/playerPose";
 import {randomProfile} from "@/lib/randomProfile";
 import {useLatestRef} from "@/lib/useLatestRef";
@@ -26,7 +36,7 @@ import {useLocalStorage} from "@/lib/useLocalStorage";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
 import type {Profile} from "@/protocol";
 import {resolvePaletteSwap} from "@/sprites/palettes";
-import {useCallback, useEffect, useRef, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 
 const DEFAULT_MAP_URL = "/maps/overworld-map.json";
 const PLAYER_CHARACTER_ID = "player-link";
@@ -53,6 +63,8 @@ type OfflineGame = {
 	world: World;
 	clock: GameClock;
 	player: BasicCharacter;
+	keyboard: KeyboardInputProvider;
+	steer: PointerSteerInputProvider;
 	invalidatePlayer: () => void;
 };
 
@@ -71,18 +83,46 @@ function MapPage({
 	);
 	// offline only renders avatar/palette; the name rides along untouched.
 	const [profile, setProfile] = useLocalStorage<Profile>(profileKey, randomProfile);
+	const [storedBindings, setStoredBindings] = useLocalStorage<KeyBindings>(
+		MOVEMENT_BINDINGS_KEY,
+		DEFAULT_KEY_BINDINGS
+	);
+	// memoized so effects downstream only re-fire on real changes, not on the
+	// fresh arrays sanitizing allocates each call.
+	const movementBindings = useMemo(
+		() => sanitizeMovementBindings(storedBindings),
+		[storedBindings]
+	);
+	const [clickToMove, setClickToMove] = useLocalStorage(CLICK_TO_MOVE_KEY, true);
 	const [profileOpen, setProfileOpen] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [isAdmin] = useState(hasAdminToken);
+	// any modal steals the keyboard: its keys (focus nav, keybind capture)
+	// shouldn't drive the character underneath.
+	const modalOpen = profileOpen || settingsOpen;
 
 	// mirrored into refs so init (called once per map load) can read the
 	// current values when first constructing the player without taking
 	// them as deps and re-running the whole load on every change.
 	const profileRef = useLatestRef(profile);
+	const movementBindingsRef = useLatestRef(movementBindings);
+	const modalOpenRef = useLatestRef(modalOpen);
 	const gameRef = useRef<OfflineGame | null>(null);
+
+	useEffect(() => {
+		const game = gameRef.current;
+		if (!game) return;
+		game.keyboard.setEnabled(!modalOpen);
+		game.steer.setEnabled(!modalOpen);
+	}, [modalOpen]);
+
+	useEffect(() => {
+		gameRef.current?.keyboard.setBindings(movementBindings);
+	}, [movementBindings]);
 
 	const init = useCallback(
 		(ctx: MapRendererInitContext) => {
-			const {map, world, renderer, mapPixelWidth, mapPixelHeight} = ctx;
+			const {map, world, renderer, mapPixelWidth, mapPixelHeight, screenToWorld} = ctx;
 			const clock = new GameClock(DEFAULT_TICK_RATE_HZ);
 			// arriving from online mode keeps the player where they stood;
 			// otherwise the last session's persisted position; otherwise spawn
@@ -106,19 +146,28 @@ function MapPage({
 				y: spawn.y,
 				facing: poseUsable ? pose.facing : undefined,
 			});
-			world.addCharacter(player, new KeyboardInputProvider());
+			const keyboard = new KeyboardInputProvider(movementBindingsRef.current);
+			const steer = new PointerSteerInputProvider({
+				screenToWorld,
+				origin: () => collisionCenter(player),
+			});
+			// honor a modal already open when the map finishes loading.
+			keyboard.setEnabled(!modalOpenRef.current);
+			steer.setEnabled(!modalOpenRef.current);
+			world.addCharacter(player, new CompositeInputProvider([keyboard, steer]));
 			resolveCharacterCollision(player, world.grid, world.holes);
 			const invalidatePlayer = () => {
 				renderer.invalidate(player.id);
 				renderer.ensureLoaded([player]).catch(() => {});
 			};
-			gameRef.current = {world, clock, player, invalidatePlayer};
+			gameRef.current = {world, clock, player, keyboard, steer, invalidatePlayer};
 			return {
 				follow: () => player,
 				initialFocus: {
 					x: player.x + player.spriteWidth / 2,
 					y: player.y + player.spriteHeight / 2,
 				},
+				onSteer: (point: {x: number; y: number} | null) => steer.setScreenTarget(point),
 				dispose: () => {
 					// leaving the page: the online map starts its camera on this
 					// pose after a mode switch, storage restores it next session.
@@ -129,7 +178,7 @@ function MapPage({
 				},
 			};
 		},
-		[mapUrl, profileRef]
+		[mapUrl, profileRef, movementBindingsRef, modalOpenRef]
 	);
 
 	const step = useCallback((dtMs: number) => {
@@ -177,6 +226,7 @@ function MapPage({
 		// the overlay is an admin diagnostic; a stored `true` stays inert for
 		// everyone else.
 		debug: debug && isAdmin,
+		clickToMove,
 		init,
 		step,
 		onTileClick,
@@ -239,7 +289,13 @@ function MapPage({
 						)}
 						<PositionWidget playerTile={playerTile} />
 						<ProfileWidget onOpenProfile={() => setProfileOpen(true)} />
-						<SettingsWidget>
+						<SettingsWidget
+							bindings={movementBindings}
+							onBindingsChange={setStoredBindings}
+							clickToMove={clickToMove}
+							onClickToMoveChange={setClickToMove}
+							onOpenChange={setSettingsOpen}
+						>
 							<SettingsCheckbox
 								checked={follow}
 								onChange={setFollow}

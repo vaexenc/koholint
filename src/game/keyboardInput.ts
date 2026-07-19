@@ -52,14 +52,19 @@ export class KeyboardInputProvider implements InputProvider {
 	constructor(bindings: KeyBindings = DEFAULT_KEY_BINDINGS, target: Window = window) {
 		this.target = target;
 		this.bound = bindings;
-		this.boundKeys = new Set(
-			[...bindings.up, ...bindings.down, ...bindings.left, ...bindings.right].map((k) =>
-				k.toLowerCase()
-			)
-		);
+		this.boundKeys = boundKeySet(bindings);
 		target.addEventListener("keydown", this.onKeyDown);
 		target.addEventListener("keyup", this.onKeyUp);
 		target.addEventListener("blur", this.onBlur);
+	}
+
+	// swaps the active bindings (e.g. edited in settings). pressed state resets —
+	// a key held across the swap shouldn't keep driving movement under a mapping
+	// it no longer belongs to. `seen` persists: those keys were genuinely pressed.
+	setBindings(bindings: KeyBindings): void {
+		this.bound = bindings;
+		this.boundKeys = boundKeySet(bindings);
+		this.pressed.clear();
 	}
 
 	// the bound keys pressed at least once. read live each frame; the consumer
@@ -119,4 +124,12 @@ export class KeyboardInputProvider implements InputProvider {
 	};
 
 	private onBlur = () => this.pressed.clear();
+}
+
+function boundKeySet(bindings: KeyBindings): Set<string> {
+	return new Set(
+		[...bindings.up, ...bindings.down, ...bindings.left, ...bindings.right].map((k) =>
+			k.toLowerCase()
+		)
+	);
 }

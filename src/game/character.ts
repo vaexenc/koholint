@@ -543,6 +543,16 @@ export function characterAabb(char: BasicCharacter): Aabb {
 	return aabbAtPosition(char, char.x, char.y);
 }
 
+// world-space center of the character's collision box — the point steering,
+// tile readouts, and teleports anchor on.
+export function collisionCenter(char: Pick<BasicCharacter, "x" | "y" | "collisionBox">): {
+	x: number;
+	y: number;
+} {
+	const box = char.collisionBox;
+	return {x: char.x + box.x + box.width / 2, y: char.y + box.y + box.height / 2};
+}
+
 // nudges a character out of any solid (or, when supplied, hole) tile it's
 // currently overlapping by snapping its collision box to the closest free
 // position. returns true when the character was actually moved. no-op when

@@ -76,6 +76,37 @@ function drawSet(
 	}
 }
 
+// touch counterpart of the key hint: a "Hold to walk" pill under the player's
+// feet, gently pulsing until the first successful hold-steer dismisses it.
+export function drawTouchMovementHint(
+	ctx: CanvasRenderingContext2D,
+	centerX: number,
+	footY: number,
+	timeMs: number
+): void {
+	const t = (timeMs % CYCLE_MS) / CYCLE_MS;
+	const phase = 0.5 * (1 - Math.cos(2 * Math.PI * t));
+	const alpha = BASE_ALPHA * (0.7 + 0.3 * phase);
+	const topY = footY + FOOT_GAP;
+	const label = "Hold to walk";
+	ctx.save();
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.font = "bold 15px system-ui, -apple-system, sans-serif";
+	const width = ctx.measureText(label).width + 24;
+	ctx.globalAlpha = alpha;
+	ctx.beginPath();
+	ctx.roundRect(centerX - width / 2, topY, width, KEY_SIZE, 8);
+	ctx.fillStyle = "rgba(0,0,0,0.6)";
+	ctx.fill();
+	ctx.lineWidth = 1.5;
+	ctx.strokeStyle = "rgba(255,255,255,0.95)";
+	ctx.stroke();
+	ctx.fillStyle = "rgba(255,255,255,0.95)";
+	ctx.fillText(label, centerX, topY + KEY_SIZE / 2 + 1);
+	ctx.restore();
+}
+
 // draws the hint in screen-space (CSS pixels), centered on `centerX`, just
 // below `footY` (the screen-y of the sprite's feet). caller gates on
 // isMovementLearned() before calling.

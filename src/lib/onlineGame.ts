@@ -1,25 +1,33 @@
 import {resolveAvatarSprite} from "@/components/avatar-picker/registry";
 import {
 	collectSpawnRegions,
+	collisionCenter,
+	CompositeInputProvider,
 	createBasicCharacter,
+	DEFAULT_KEY_BINDINGS,
 	drawChatBubbles,
 	drawMovementHint,
 	drawNameTag,
+	drawTouchMovementHint,
 	GameClock,
 	isMovementLearned,
 	KeyboardInputProvider,
 	lerp,
 	NAME_TAG_HEIGHT,
 	overlayTextScale,
+	PointerSteerInputProvider,
 	pruneChatBubbles,
 	pushChatBubble,
 	sampleSpawnOrCenter,
 	StaticInputProvider,
 	type BasicCharacter,
 	type ChatBubble,
+	type KeyBindings,
 	type World,
 } from "@/game";
 import {type CharacterInput, type Direction} from "@/game/types";
+import {sameMovementBindings} from "@/lib/movementBindings";
+import {hasCoarsePointer} from "@/lib/pointerType";
 import {
 	applyRemoteInterp,
 	recordRemotePose,
@@ -70,6 +78,8 @@ export type GameNet = {
 export class OnlineGame {
 	readonly selfChar: BasicCharacter;
 	readonly selfKeyboard: KeyboardInputProvider;
+	readonly selfSteer: PointerSteerInputProvider;
+	private readonly selfInput: CompositeInputProvider;
 	private readonly world: World;
 	private readonly renderer: MapRendererInitContext["renderer"];
 	private readonly serverClock: ServerClock;
@@ -85,6 +95,8 @@ export class OnlineGame {
 	private selfSpawned = false;
 	private pendingSelfSnap: {x: number; y: number; facing: Direction} | null = null;
 	private movementLearned: boolean;
+	// touch-primary devices get the hold-to-walk hint instead of the key hint.
+	private readonly coarsePointer = hasCoarsePointer();
 	// while another tab controls the avatar this tab renders the self character
 	// exactly like a remote: interpolated snapshots buffered here, no prediction.
 	private readonly selfMirror: PoseMirror;
@@ -111,12 +123,29 @@ export class OnlineGame {
 			x: spawn.x,
 			y: spawn.y,
 		});
+		this.selfSteer = new PointerSteerInputProvider({
+			screenToWorld: ctx.screenToWorld,
+			origin: () => collisionCenter(this.selfChar),
+		});
+		this.selfInput = new CompositeInputProvider([this.selfKeyboard, this.selfSteer]);
 		this.selfMirror = {character: this.selfChar, samples: []};
 		this.movementLearned = deps.movementInitiallyLearned;
 	}
 
-	setKeyboardEnabled(enabled: boolean): void {
+	// suspends/resumes all player input sources (e.g. while a modal is open).
+	setInputEnabled(enabled: boolean): void {
 		this.selfKeyboard.setEnabled(enabled);
+		this.selfSteer.setEnabled(enabled);
+	}
+
+	setKeyBindings(bindings: KeyBindings): void {
+		this.selfKeyboard.setBindings(bindings);
+		// the movement hint teaches the default keys; a player running custom
+		// bindings chose them in settings and would only be shown wrong keys.
+		if (!this.movementLearned && !sameMovementBindings(bindings, DEFAULT_KEY_BINDINGS)) {
+			this.movementLearned = true;
+			this.deps.onMovementLearned();
+		}
 	}
 
 	get selfConnId(): ConnId | null {
@@ -409,7 +438,11 @@ export class OnlineGame {
 	): void {
 		if (!this.selfSpawned || this.movementLearned) return;
 		const seen = this.selfKeyboard.getSeenKeys();
-		if (isMovementLearned(seen)) {
+		// moving by any means retires the hint: a full key set, or a successful
+		// hold-to-walk steer (touch, or click-to-move on desktop).
+		const learned =
+			this.selfSteer.hasSteered() || (!this.coarsePointer && isMovementLearned(seen));
+		if (learned) {
 			this.movementLearned = true;
 			this.deps.onMovementLearned();
 			return;
@@ -418,7 +451,8 @@ export class OnlineGame {
 			lerp(this.selfChar.prevX, this.selfChar.x, alpha) + this.selfChar.spriteWidth / 2,
 			lerp(this.selfChar.prevY, this.selfChar.y, alpha) + this.selfChar.spriteHeight
 		);
-		drawMovementHint(ctx, screenX, screenY, seen, performance.now());
+		if (this.coarsePointer) drawTouchMovementHint(ctx, screenX, screenY, performance.now());
+		else drawMovementHint(ctx, screenX, screenY, seen, performance.now());
 	}
 
 	private characterFor(connId: ConnId): BasicCharacter | null {
@@ -436,7 +470,7 @@ export class OnlineGame {
 		const profile = this.deps.profile();
 		this.selfChar.sprite = resolveAvatarSprite(profile.avatarId);
 		this.selfChar.paletteSwap = resolvePaletteSwap(profile.paletteId);
-		this.world.addCharacter(this.selfChar, this.selfKeyboard);
+		this.world.addCharacter(this.selfChar, this.selfInput);
 		this.selfSpawned = true;
 		this.renderer.ensureLoaded([this.selfChar]).catch(() => {});
 	}

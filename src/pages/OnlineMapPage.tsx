@@ -15,7 +15,13 @@ import {PositionWidget} from "@/components/PositionWidget";
 import {ProfileDialog} from "@/components/ProfileDialog";
 import {ProfileWidget} from "@/components/ProfileWidget";
 import {SettingsCheckbox, SettingsWidget} from "@/components/SettingsWidget";
+import {DEFAULT_KEY_BINDINGS, type KeyBindings} from "@/game";
 import {readAdminToken} from "@/lib/adminToken";
+import {
+	CLICK_TO_MOVE_KEY,
+	MOVEMENT_BINDINGS_KEY,
+	sanitizeMovementBindings,
+} from "@/lib/movementBindings";
 import {OnlineGame} from "@/lib/onlineGame";
 import {handOffPlayerPose, takePlayerPose} from "@/lib/playerPose";
 import {randomProfile} from "@/lib/randomProfile";
@@ -119,7 +125,20 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 		DEFAULT_PLAYER_LIST_HEIGHT
 	);
 
+	const [storedBindings, setStoredBindings] = useLocalStorage<KeyBindings>(
+		MOVEMENT_BINDINGS_KEY,
+		DEFAULT_KEY_BINDINGS
+	);
+	// memoized so effects downstream only re-fire on real changes, not on the
+	// fresh arrays sanitizing allocates each call.
+	const movementBindings = useMemo(
+		() => sanitizeMovementBindings(storedBindings),
+		[storedBindings]
+	);
+	const [clickToMove, setClickToMove] = useLocalStorage(CLICK_TO_MOVE_KEY, true);
+
 	const [profileOpen, setProfileOpen] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [status, setStatus] = useState<ConnectionStatus>("idle");
 	const [phase, setPhase] = useState<JoinPhase>({kind: "preMap"});
 	const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
@@ -127,22 +146,29 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 	const [isAdmin, setIsAdmin] = useState(false);
 	const [serverNameError, setServerNameError] = useState<string | undefined>(undefined);
 
+	// any modal steals the keyboard: its keys (typing, focus nav, keybind
+	// capture) shouldn't drive the character. the editable-target guard in
+	// KeyboardInputProvider already covers the chat box and name field.
+	const modalOpen = profileOpen || settingsOpen;
+
 	const profileRef = useLatestRef(profile);
 	const chatBubblesRef = useLatestRef(chatBubbles);
 	const nameTagsRef = useLatestRef(nameTags);
 	const chatSettingsRef = useLatestRef(chatSettings);
 	const phaseRef = useLatestRef(phase);
-	const profileOpenRef = useLatestRef(profileOpen);
+	const modalOpenRef = useLatestRef(modalOpen);
+	const movementBindingsRef = useLatestRef(movementBindings);
 	const gameRef = useRef<OnlineGame | null>(null);
 	const wsRef = useRef<TabSyncedClient | null>(null);
 	const chatInputRef = useRef<HTMLInputElement | null>(null);
 
-	// pause player movement while the profile dialog is open so its keys
-	// (typing, focus nav) don't drive the character. the editable-target guard
-	// in KeyboardInputProvider already covers the chat box and name field.
 	useEffect(() => {
-		gameRef.current?.setKeyboardEnabled(!profileOpen);
-	}, [profileOpen]);
+		gameRef.current?.setInputEnabled(!modalOpen);
+	}, [modalOpen]);
+
+	useEffect(() => {
+		gameRef.current?.setKeyBindings(movementBindings);
+	}, [movementBindings]);
 
 	// Enter jumps into the chat input when nothing (map/canvas or the page body)
 	// holds focus, so players can start typing without reaching for the mouse.
@@ -321,7 +347,8 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 				onMovementLearned: () => setStored(LEARNED_MOVEMENT_KEY, "1"),
 			});
 			// honor a dialog already open when the map finishes loading.
-			game.setKeyboardEnabled(!profileOpenRef.current);
+			game.setInputEnabled(!modalOpenRef.current);
+			game.setKeyBindings(movementBindingsRef.current);
 			game.setChatBubblesEnabled(chatBubblesRef.current);
 			game.setNameTagsEnabled(nameTagsRef.current);
 			gameRef.current = game;
@@ -335,6 +362,8 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 				follow: game.followTarget.bind(game),
 				initialFocus: from ? {x: from.x, y: from.y} : null,
 				drawScreenOverlay: game.drawScreenOverlay.bind(game),
+				onSteer: (point: {x: number; y: number} | null) =>
+					game.selfSteer.setScreenTarget(point),
 				dispose: () => {
 					// leaving the page (e.g. switching to offline mode): let the
 					// offline map pick up where the player stood.
@@ -344,7 +373,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 				},
 			};
 		},
-		[mapUrl, profileRef, profileOpenRef, chatBubblesRef, nameTagsRef]
+		[mapUrl, profileRef, modalOpenRef, movementBindingsRef, chatBubblesRef, nameTagsRef]
 	);
 
 	const step = useCallback((dtMs: number) => {
@@ -377,6 +406,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 		debug: debug && isAdmin,
 		insetLeft: uiSide === "left" ? chatInset : 0,
 		insetRight: uiSide === "right" ? chatInset : 0,
+		clickToMove,
 		init,
 		step,
 		onTileClick,
@@ -463,7 +493,13 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 						/>
 						<PositionWidget playerTile={playerTile} />
 						<ProfileWidget onOpenProfile={() => setProfileOpen(true)} />
-						<SettingsWidget>
+						<SettingsWidget
+							bindings={movementBindings}
+							onBindingsChange={setStoredBindings}
+							clickToMove={clickToMove}
+							onClickToMoveChange={setClickToMove}
+							onOpenChange={setSettingsOpen}
+						>
 							<SettingsCheckbox
 								checked={chatBubbles}
 								onChange={setChatBubbles}

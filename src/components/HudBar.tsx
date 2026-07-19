@@ -10,7 +10,7 @@ export function HudBar({reversed, children}: {reversed?: boolean; children: Reac
 		<TooltipProvider>
 			<div
 				className={cn(
-					"fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-10 flex max-w-[calc(100vw-1rem)] flex-wrap items-center gap-1",
+					"fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-10 flex max-w-[calc(100vw-1rem)] flex-wrap items-center gap-1 select-none",
 					reversed
 						? "right-[max(0.5rem,env(safe-area-inset-right))] flex-row-reverse"
 						: "left-[max(0.5rem,env(safe-area-inset-left))]"

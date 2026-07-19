@@ -6,6 +6,7 @@ import {
 	buildTeleporterGrid,
 	buildTerrainGrid,
 	CharacterRenderer,
+	collisionCenter,
 	createDebugOverlay,
 	DEBUG_OVERLAY_ALL,
 	DEFAULT_DEBUG_OVERLAY,
@@ -23,6 +24,7 @@ import {
 	useRef,
 	useState,
 	type CSSProperties,
+	type MouseEvent as ReactMouseEvent,
 	type PointerEvent as ReactPointerEvent,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -40,6 +42,11 @@ const MAX_FRAME_DT = 0.1;
 // pointer travel under this many CSS pixels between down and up is treated
 // as a click (teleport) rather than a drag (pan).
 const CLICK_MAX_TRAVEL_PX = 4;
+// a steer release this quick (and within CLICK_MAX_TRAVEL_PX) still counts as
+// a tap/click. steering engages instantly on press for zero input lag, so a
+// tap steers for a few ticks first — harmless, since where a click means
+// teleport the teleport overrides the position anyway.
+const TAP_MAX_MS = 200;
 
 // maps and their tilesets are immutable per URL, so keep them for the app's
 // lifetime: switching between the online and offline pages (which share a map)
@@ -118,6 +125,9 @@ export type MapRendererInitContext = {
 	readonly renderer: CharacterRenderer;
 	readonly mapPixelWidth: number;
 	readonly mapPixelHeight: number;
+	// projects a client-space (CSS px) point into world coordinates under the
+	// live camera. safe to call every tick — it reads the camera at call time.
+	readonly screenToWorld: (x: number, y: number) => readonly [number, number];
 };
 
 export type MapRendererSetup = {
@@ -137,6 +147,12 @@ export type MapRendererSetup = {
 		worldToScreen: (x: number, y: number) => readonly [number, number],
 		zoom: number
 	) => void;
+	// receives the pointer position (client CSS px) of a hold-to-walk gesture —
+	// re-fed on every move, null when the gesture ends. providing this reroutes
+	// single-finger touch (always) and the left mouse/pen button (when
+	// clickToMove is set) from camera panning to character steering; two-finger
+	// pan/zoom, other-button drags, and tap/click-to-teleport keep working.
+	onSteer?: (point: {x: number; y: number} | null) => void;
 	dispose?: () => void;
 };
 
@@ -158,6 +174,9 @@ export type UseMapRendererParams = {
 	// anchors to the full window.
 	insetLeft?: number;
 	insetRight?: number;
+	// routes the left mouse/pen button to hold-to-walk steering (like touch)
+	// instead of camera panning. only meaningful when init supplies onSteer.
+	clickToMove?: boolean;
 	init: (ctx: MapRendererInitContext) => Promise<MapRendererSetup> | MapRendererSetup;
 	// advance simulation by dtMs; return the interpolation alpha (0..1) used
 	// when drawing characters between their previous and current poses.
@@ -193,6 +212,16 @@ type Pinch = {
 	worldY: number;
 };
 
+// hold-to-walk session (single touch, or left mouse/pen with click-to-move).
+// steers from the moment of the press; the start pose/time only serve to
+// reclassify a quick, still release as a tap (click) on the way out.
+type Steer = {
+	pointerId: number;
+	startX: number;
+	startY: number;
+	startTime: number;
+};
+
 function clampScale(scale: number): number {
 	return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
 }
@@ -206,6 +235,7 @@ export type UseMapRendererResult = {
 		onPointerMove: (e: ReactPointerEvent<HTMLCanvasElement>) => void;
 		onPointerUp: (e: ReactPointerEvent<HTMLCanvasElement>) => void;
 		onPointerCancel: (e: ReactPointerEvent<HTMLCanvasElement>) => void;
+		onContextMenu: (e: ReactMouseEvent<HTMLCanvasElement>) => void;
 		onWheel: (e: ReactWheelEvent<HTMLCanvasElement>) => void;
 	};
 	state: MapLoadState;
@@ -220,6 +250,7 @@ export function useMapRenderer({
 	debug,
 	insetLeft = 0,
 	insetRight = 0,
+	clickToMove = false,
 	init,
 	step,
 	onTileClick,
@@ -238,6 +269,7 @@ export function useMapRenderer({
 	// insertion, so the first two entries are the pinch pair).
 	const pointersRef = useRef(new Map<number, {x: number; y: number}>());
 	const pinchRef = useRef<Pinch | null>(null);
+	const steerRef = useRef<Steer | null>(null);
 	// true from the moment a gesture gains a second finger until every finger
 	// lifts, so no phase of a pinch can end in a tile click.
 	const multiTouchRef = useRef(false);
@@ -255,11 +287,13 @@ export function useMapRenderer({
 	const mapSizeRef = useRef<{width: number; height: number} | null>(null);
 	const displayedZoomRef = useRef(INITIAL_SCALE);
 	const displayedPlayerTileRef = useRef<{x: number; y: number} | null>(null);
+	const displayedCanDragRef = useRef(false);
 
 	// live config + callback refs so the load effect (deps: [mapUrl]) keeps
 	// reading the latest values without re-running the whole map load.
 	const followRef = useRef(follow);
 	const debugRef = useRef(debug);
+	const clickToMoveRef = useRef(clickToMove);
 	const insetsRef = useRef({left: insetLeft, right: insetRight});
 	// the insets the camera math actually uses; spring toward insetsRef in the
 	// render loop so showing/hiding/resizing/side-switching the overlay glides
@@ -274,6 +308,9 @@ export function useMapRenderer({
 	useEffect(() => {
 		debugRef.current = debug;
 	}, [debug]);
+	useEffect(() => {
+		clickToMoveRef.current = clickToMove;
+	}, [clickToMove]);
 	useEffect(() => {
 		insetsRef.current = {left: insetLeft, right: insetRight};
 	}, [insetLeft, insetRight]);
@@ -295,6 +332,9 @@ export function useMapRenderer({
 	const [zoom, setZoom] = useState(INITIAL_SCALE);
 	const [playerTile, setPlayerTile] = useState<{x: number; y: number} | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
+	// whether a drag could actually pan the map right now — false while the
+	// camera is locked to the player (follow) or the map is fully clamped.
+	const [canDrag, setCanDrag] = useState(false);
 
 	// x-axis strip of the window not covered by the side overlays — the region
 	// the camera clamps the map to cover. end is kept >= start for degenerate
@@ -345,6 +385,10 @@ export function useMapRenderer({
 					renderer,
 					mapPixelWidth,
 					mapPixelHeight,
+					screenToWorld: (x, y) => {
+						const cam = cameraRef.current;
+						return [(x - cam.offsetX) / cam.scale, (y - cam.offsetY) / cam.scale];
+					},
 				});
 				if (cancelled) {
 					setup.dispose?.();
@@ -666,6 +710,22 @@ export function useMapRenderer({
 						);
 					}
 
+					// keep the grab affordance honest: no grab cursor while the left
+					// button steers instead of pans (click-to-move), while the camera
+					// is locked to the player (the follow spring overrides any drag),
+					// or while the clamp leaves no room to pan on either axis
+					// (matches clampCameraOffset's centering case).
+					const leftButtonSteers = clickToMoveRef.current && setup.onSteer !== undefined;
+					const dragPossible =
+						!leftButtonSteers &&
+						!followTarget &&
+						(mapPixelWidth * cam.scale > vpX.end - vpX.start ||
+							mapPixelHeight * cam.scale > window.innerHeight);
+					if (dragPossible !== displayedCanDragRef.current) {
+						displayedCanDragRef.current = dragPossible;
+						setCanDrag(dragPossible);
+					}
+
 					// push the live camera into the overlay state, but only when
 					// the user-visible (rounded) value actually changes, to avoid
 					// re-rendering the overlay every single frame.
@@ -678,13 +738,9 @@ export function useMapRenderer({
 					// doesn't re-render every frame. inverts the teleport placement in
 					// onTileClick, so click-to-teleport round-trips to the shown tile.
 					if (playerTarget) {
-						const box = playerTarget.collisionBox;
-						const tileX = Math.floor(
-							(playerTarget.x + box.x + box.width / 2) / map.tilewidth
-						);
-						const tileY = Math.floor(
-							(playerTarget.y + box.y + box.height / 2) / map.tileheight
-						);
+						const center = collisionCenter(playerTarget);
+						const tileX = Math.floor(center.x / map.tilewidth);
+						const tileY = Math.floor(center.y / map.tileheight);
 						const prev = displayedPlayerTileRef.current;
 						if (!prev || prev.x !== tileX || prev.y !== tileY) {
 							displayedPlayerTileRef.current = {x: tileX, y: tileY};
@@ -711,6 +767,7 @@ export function useMapRenderer({
 			cancelled = true;
 			if (frameHandle !== 0) cancelAnimationFrame(frameHandle);
 			cleanupResize?.();
+			steerRef.current = null;
 			setupRef.current?.dispose?.();
 			worldRef.current?.dispose();
 			setupRef.current = null;
@@ -735,6 +792,24 @@ export function useMapRenderer({
 		};
 	};
 
+	const endSteer = () => {
+		if (!steerRef.current) return;
+		setupRef.current?.onSteer?.(null);
+		steerRef.current = null;
+	};
+
+	const fireTileClick = (clientX: number, clientY: number) => {
+		const map = mapRef.current;
+		if (!map) return;
+		const cam = cameraRef.current;
+		const worldX = (clientX - cam.offsetX) / cam.scale;
+		const worldY = (clientY - cam.offsetY) / cam.scale;
+		const tileX = Math.floor(worldX / map.tilewidth);
+		const tileY = Math.floor(worldY / map.tileheight);
+		if (tileX < 0 || tileY < 0 || tileX >= map.width || tileY >= map.height) return;
+		onTileClickRef.current?.({worldX, worldY, tileX, tileY, map});
+	};
+
 	const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
 		const cam = cameraRef.current;
 		// commit any in-flight spring animation to the current pose, so the
@@ -748,15 +823,34 @@ export function useMapRenderer({
 		const pointers = pointersRef.current;
 		pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
 		if (pointers.size === 2) {
-			// a second finger turns the drag into a pinch (zoom + pan around
-			// the midpoint) for the rest of the gesture.
+			// a second finger turns the gesture into a pinch (zoom + pan around
+			// the midpoint) for the rest of it, ending any drag or steer.
 			multiTouchRef.current = true;
+			endSteer();
 			dragRef.current = null;
 			setIsDragging(false);
 			pinchRef.current = capturePinch();
 			return;
 		}
 		if (pointers.size > 2) return;
+		// hold-to-walk (when the page wired it up): a single touch always steers
+		// the character — camera panning stays on two fingers there — and the
+		// left mouse/pen button steers when click-to-move is on, leaving panning
+		// to the other buttons. steering starts on the press itself.
+		const steersPointer =
+			e.pointerType === "touch" || (clickToMoveRef.current && e.button === 0);
+		const onSteer = setupRef.current?.onSteer;
+		if (steersPointer && onSteer) {
+			endSteer();
+			steerRef.current = {
+				pointerId: e.pointerId,
+				startX: e.clientX,
+				startY: e.clientY,
+				startTime: performance.now(),
+			};
+			onSteer({x: e.clientX, y: e.clientY});
+			return;
+		}
 		dragRef.current = {
 			pointerId: e.pointerId,
 			button: e.button,
@@ -773,6 +867,11 @@ export function useMapRenderer({
 		if (tracked) {
 			tracked.x = e.clientX;
 			tracked.y = e.clientY;
+		}
+		const steer = steerRef.current;
+		if (steer && steer.pointerId === e.pointerId) {
+			setupRef.current?.onSteer?.({x: e.clientX, y: e.clientY});
+			return;
 		}
 		const pinch = pinchRef.current;
 		if (pinch) {
@@ -827,6 +926,23 @@ export function useMapRenderer({
 		const wasMultiTouch = multiTouchRef.current;
 		pointers.delete(e.pointerId);
 		if (pointers.size === 0) multiTouchRef.current = false;
+		const steer = steerRef.current;
+		if (steer && steer.pointerId === e.pointerId) {
+			endSteer();
+			e.currentTarget.releasePointerCapture(e.pointerId);
+			// a quick, still press is a tap — the click the mouse path would
+			// deliver. a longer hold was a walk (and a cancelled pointer is
+			// neither), so those never click.
+			if (
+				e.type === "pointerup" &&
+				performance.now() - steer.startTime < TAP_MAX_MS &&
+				Math.hypot(e.clientX - steer.startX, e.clientY - steer.startY) <=
+					CLICK_MAX_TRAVEL_PX
+			) {
+				fireTileClick(e.clientX, e.clientY);
+			}
+			return;
+		}
 		if (pinchRef.current) {
 			// a finger changed: re-baseline with the remaining pair, or fall
 			// back to a plain pan under the last finger.
@@ -857,15 +973,7 @@ export function useMapRenderer({
 		// no phase of a multi-touch gesture is a click, even the trailing
 		// single-finger pan after a pinch.
 		if (wasMultiTouch || !wasLeft || travel > CLICK_MAX_TRAVEL_PX) return;
-		const map = mapRef.current;
-		if (!map) return;
-		const cam = cameraRef.current;
-		const worldX = (e.clientX - cam.offsetX) / cam.scale;
-		const worldY = (e.clientY - cam.offsetY) / cam.scale;
-		const tileX = Math.floor(worldX / map.tilewidth);
-		const tileY = Math.floor(worldY / map.tileheight);
-		if (tileX < 0 || tileY < 0 || tileX >= map.width || tileY >= map.height) return;
-		onTileClickRef.current?.({worldX, worldY, tileX, tileY, map});
+		fireTileClick(e.clientX, e.clientY);
 	};
 
 	const onWheel = (e: ReactWheelEvent<HTMLCanvasElement>) => {
@@ -910,12 +1018,18 @@ export function useMapRenderer({
 			className: "absolute inset-0 h-full w-full touch-none select-none",
 			style: {
 				imageRendering: "pixelated",
-				cursor: isDragging ? "grabbing" : "grab",
+				cursor: canDrag ? (isDragging ? "grabbing" : "grab") : "default",
 			},
 			onPointerDown,
 			onPointerMove,
 			onPointerUp,
 			onPointerCancel: onPointerUp,
+			// no context menu while a hold-to-walk gesture is active (Android
+			// fires it on touch long-press, desktop on right-click mid-steer);
+			// plain right-clicks stay untouched.
+			onContextMenu: (e) => {
+				if (steerRef.current) e.preventDefault();
+			},
 			onWheel,
 		},
 		state,

@@ -3,10 +3,36 @@ import ConnectionWidget from "@/components/ConnectionWidget";
 import {HudBar} from "@/components/HudBar";
 import {PositionWidget} from "@/components/PositionWidget";
 import {ProfileWidget} from "@/components/ProfileWidget";
-import {SettingsWidget} from "@/components/SettingsWidget";
+import {SettingsCheckbox, SettingsWidget} from "@/components/SettingsWidget";
 import {TooltipProvider} from "@/components/ui/tooltip";
+import {DEFAULT_KEY_BINDINGS, type KeyBindings} from "@/game";
 import type {Meta, StoryObj} from "@storybook/tanstack-react";
+import {useState, type ReactNode} from "react";
 import {fn} from "storybook/test";
+
+// stateful movement config so the settings modal is fully interactive in the
+// stories.
+function StorySettingsWidget({children}: {children?: ReactNode}) {
+	const [bindings, setBindings] = useState<KeyBindings>(DEFAULT_KEY_BINDINGS);
+	const [clickToMove, setClickToMove] = useState(true);
+	return (
+		<SettingsWidget
+			bindings={bindings}
+			onBindingsChange={setBindings}
+			clickToMove={clickToMove}
+			onClickToMoveChange={setClickToMove}
+		>
+			{children}
+		</SettingsWidget>
+	);
+}
+
+// the page owns each toggle's checked state; these demo stand-ins do the same so
+// the boxes actually flip when clicked in a story.
+function DemoCheckbox({label, defaultChecked}: {label: string; defaultChecked?: boolean}) {
+	const [checked, setChecked] = useState(defaultChecked ?? false);
+	return <SettingsCheckbox label={label} checked={checked} onChange={setChecked} />;
+}
 
 // the widgets only need a tooltip scope from their surroundings; the decorator
 // supplies that and otherwise lets them sit in normal flow (top-left) on their
@@ -34,12 +60,9 @@ export const AllWidgets: Story = {
 		<>
 			<PositionWidget playerTile={{x: 42, y: 17}} />
 			<ProfileWidget onOpenProfile={fn()} />
-			<SettingsWidget>
-				<label className="flex items-center gap-2">
-					<input type="checkbox" defaultChecked />
-					Camera follow
-				</label>
-			</SettingsWidget>
+			<StorySettingsWidget>
+				<DemoCheckbox label="Camera follow" defaultChecked />
+			</StorySettingsWidget>
 		</>
 	),
 };
@@ -66,30 +89,21 @@ export const FullBar: Story = {
 			/>
 			<PositionWidget playerTile={{x: 42, y: 17}} />
 			<ProfileWidget onOpenProfile={fn()} />
-			<SettingsWidget>
-				<label className="flex items-center gap-2">
-					<input type="checkbox" defaultChecked />
-					Camera follow
-				</label>
-			</SettingsWidget>
+			<StorySettingsWidget>
+				<DemoCheckbox label="Camera follow" defaultChecked />
+			</StorySettingsWidget>
 			<AdminBadge />
 		</HudBar>
 	),
 };
 
-// the gear popover carries whatever quick settings a page supplies; here it also
-// holds an admin-only debug toggle, as the online page does.
+// the settings modal carries whatever quick toggles a page supplies above the
+// always-present movement keybind editor.
 export const WithAdminControls: Story = {
 	render: () => (
-		<SettingsWidget>
-			<label className="flex items-center gap-2">
-				<input type="checkbox" defaultChecked />
-				Camera follow
-			</label>
-			<label className="flex items-center gap-2">
-				<input type="checkbox" />
-				Debug overlay
-			</label>
-		</SettingsWidget>
+		<StorySettingsWidget>
+			<DemoCheckbox label="Camera follow" defaultChecked />
+			<DemoCheckbox label="Debug overlay" />
+		</StorySettingsWidget>
 	),
 };
