@@ -36,7 +36,16 @@ const LEADER_STALE_MS = 2500;
 
 type TabMessage =
 	| {t: "hi"; from: string}
-	| {t: "state"; to: string; welcome: ServerWelcome; status: ConnectionStatus}
+	// `snap` is the mirror's baseline of currently-visible poses: snapshots are
+	// interest-culled deltas, so without it a late tab would never see players
+	// that are on screen but static.
+	| {
+			t: "state";
+			to: string;
+			welcome: ServerWelcome;
+			status: ConnectionStatus;
+			snap: DecodedSnapshot | null;
+	  }
 	| {t: "server"; msg: ServerMessage}
 	| {t: "snapshot"; snap: DecodedSnapshot}
 	| {t: "status"; status: ConnectionStatus}
@@ -166,6 +175,14 @@ export class TabSyncedClient {
 		else this.post({t: "send", msg: {type: "teleport", x, y}});
 	}
 
+	// tabs share one server-side session but can have different viewports; the
+	// server keeps whichever report arrived last, so the interest area follows
+	// the tab the user interacted with most recently.
+	sendView(w: number, h: number): void {
+		if (this.leader) this.leader.sendView(w, h);
+		else this.post({t: "send", msg: {type: "view", w, h}});
+	}
+
 	private acquireLeadership(): void {
 		if (typeof navigator === "undefined" || !navigator.locks) {
 			// no web locks: cross-tab election is impossible; act standalone.
@@ -243,7 +260,14 @@ export class TabSyncedClient {
 			case "hi": {
 				const welcome = this.mirror.synthesizeWelcome();
 				const status = this.leader?.getStatus();
-				if (welcome && status) this.post({t: "state", to: msg.from, welcome, status});
+				if (welcome && status)
+					this.post({
+						t: "state",
+						to: msg.from,
+						welcome,
+						status,
+						snap: this.mirror.synthesizeSnapshot(),
+					});
 				return;
 			}
 			case "send":
@@ -268,6 +292,8 @@ export class TabSyncedClient {
 				return inner.sendSetProfile(msg.profile);
 			case "teleport":
 				return inner.sendTeleport(msg.x, msg.y);
+			case "view":
+				return inner.sendView(msg.w, msg.h);
 			case "hello":
 			case "leave":
 				// connection lifecycle stays the leader's own business.
@@ -282,6 +308,7 @@ export class TabSyncedClient {
 				this.noteLeaderSignal();
 				this.emitStatus(msg.status);
 				this.applyWelcome(msg.welcome);
+				if (msg.snap) this.applySyncedSnapshot(msg.snap);
 				return;
 			case "server":
 				this.noteLeaderSignal();
@@ -294,11 +321,7 @@ export class TabSyncedClient {
 				return;
 			case "snapshot":
 				this.noteLeaderSignal();
-				if (!this.hasWelcome) return;
-				if (msg.snap.ackTickForYou > this.lastServerAck)
-					this.lastServerAck = msg.snap.ackTickForYou;
-				this.inputBuffer.pruneUpTo(this.lastServerAck);
-				this.events.onSnapshot?.(msg.snap);
+				this.applySyncedSnapshot(msg.snap);
 				return;
 			case "status":
 				this.noteLeaderSignal();
@@ -329,6 +352,13 @@ export class TabSyncedClient {
 		// with the server; drop them, matching WsClient's welcome handling.
 		this.inputBuffer.clear();
 		this.events.onWelcome?.(welcome);
+	}
+
+	private applySyncedSnapshot(snap: DecodedSnapshot): void {
+		if (!this.hasWelcome) return;
+		if (snap.ackTickForYou > this.lastServerAck) this.lastServerAck = snap.ackTickForYou;
+		this.inputBuffer.pruneUpTo(this.lastServerAck);
+		this.events.onSnapshot?.(snap);
 	}
 
 	private followerTick(): void {

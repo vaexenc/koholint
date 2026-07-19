@@ -8,6 +8,7 @@ import {
 	type ClientMessage,
 	type ClientSetProfile,
 	type ClientTeleport,
+	type ClientView,
 	type CoalescedInput,
 	type Profile,
 } from "@/protocol";
@@ -103,6 +104,13 @@ function parseTeleport(value: JsonObject): ClientTeleport | null {
 	return {type: "teleport", x, y};
 }
 
+function parseView(value: JsonObject): ClientView | null {
+	const {w, h} = value;
+	if (typeof w !== "number" || !Number.isFinite(w) || w <= 0) return null;
+	if (typeof h !== "number" || !Number.isFinite(h) || h <= 0) return null;
+	return {type: "view", w, h};
+}
+
 export function parseClientMessage(raw: string): ClientMessage | null {
 	let parsed: unknown;
 	try {
@@ -122,6 +130,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
 			return parseInput(parsed);
 		case "teleport":
 			return parseTeleport(parsed);
+		case "view":
+			return parseView(parsed);
 		case "leave":
 			return {type: "leave"};
 		default:

@@ -38,6 +38,11 @@ export type RemoteEntry = PoseMirror & {
 	idIndex: number;
 	profile: Profile;
 	color: string;
+	// whether this remote's character is materialized in the world. snapshots
+	// are interest-culled deltas, so an entry exists for every rostered player
+	// but only pose-carrying ones are shown; the snapshot's removed list hides
+	// them again.
+	visible: boolean;
 };
 
 // positions the remote sprite at renderAt by lerping between the two buffered
@@ -86,6 +91,16 @@ export function applyRemoteInterp(remote: PoseMirror, renderAt: number): void {
 
 export function recordRemotePose(remote: PoseMirror, pose: SnapshotPose, at: number): void {
 	const samples = remote.samples;
+	// snapshots are deltas, so a static player produces no samples for
+	// arbitrarily long. when motion resumes, interpolating across that dormant
+	// span would land essentially at the new pose instantly; re-stamping the
+	// previous sample to one interp delay ago turns the first step back into a
+	// normal-length glide.
+	const newest = samples[samples.length - 1];
+	if (newest && at - newest.at > REMOTE_SAMPLE_HISTORY_MS) {
+		samples.length = 0;
+		samples.push({...newest, at: at - REMOTE_INTERP_DELAY_MS});
+	}
 	samples.push({
 		x: pose.x,
 		y: pose.y,

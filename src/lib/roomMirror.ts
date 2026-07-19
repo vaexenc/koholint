@@ -5,6 +5,7 @@ import type {
 	PlayerSnapshot,
 	ServerMessage,
 	ServerWelcome,
+	SnapshotPose,
 } from "@/protocol";
 
 // mirrors the server's chat backlog cap (server/rooms.ts CHAT_BACKLOG_SIZE) so
@@ -20,6 +21,11 @@ export class RoomMirror {
 	private players = new Map<ConnId, PlayerSnapshot>();
 	private chat: ChatMessage[] = [];
 	private serverTick = 0;
+	// the poses this connection's remotes currently show, maintained from the
+	// interest-culled delta stream (upsert on pose, delete on removed/leave).
+	// a late tab needs this baseline: static visible players never re-send.
+	private posesByIdIndex = new Map<number, SnapshotPose>();
+	private lastAck = 0;
 
 	hasWelcome(): boolean {
 		return this.welcome !== null;
@@ -30,15 +36,21 @@ export class RoomMirror {
 			case "welcome":
 				this.welcome = msg;
 				this.serverTick = msg.serverTick;
+				this.lastAck = msg.serverTick;
 				this.players = new Map(msg.players.map((p) => [p.connId, p]));
 				this.chat = msg.chatBacklog.slice(-CHAT_BACKLOG_SIZE);
+				// a fresh welcome means a fresh server-side interest baseline.
+				this.posesByIdIndex.clear();
 				return;
 			case "join":
 				this.players.set(msg.player.connId, msg.player);
 				return;
-			case "leave":
+			case "leave": {
+				const p = this.players.get(msg.connId);
+				if (p) this.posesByIdIndex.delete(p.idIndex);
 				this.players.delete(msg.connId);
 				return;
+			}
 			case "profileChanged": {
 				const p = this.players.get(msg.connId);
 				if (p) this.players.set(msg.connId, {...p, profile: msg.profile, color: msg.color});
@@ -60,6 +72,9 @@ export class RoomMirror {
 	// where they stand now, not where they stood at join time.
 	applySnapshot(snap: DecodedSnapshot): void {
 		if (snap.serverTick > this.serverTick) this.serverTick = snap.serverTick;
+		if (snap.ackTickForYou > this.lastAck) this.lastAck = snap.ackTickForYou;
+		for (const idIndex of snap.removed) this.posesByIdIndex.delete(idIndex);
+		for (const pose of snap.poses) this.posesByIdIndex.set(pose.idIndex, pose);
 		if (this.players.size === 0) return;
 		const byIdIndex = new Map<number, PlayerSnapshot>();
 		for (const p of this.players.values()) byIdIndex.set(p.idIndex, p);
@@ -81,6 +96,16 @@ export class RoomMirror {
 			spawn: self ? {x: self.x, y: self.y} : welcome.spawn,
 			players: [...this.players.values()],
 			chatBacklog: [...this.chat],
+		};
+	}
+
+	synthesizeSnapshot(): DecodedSnapshot | null {
+		if (!this.welcome) return null;
+		return {
+			serverTick: this.serverTick,
+			ackTickForYou: this.lastAck,
+			poses: [...this.posesByIdIndex.values()],
+			removed: [],
 		};
 	}
 }

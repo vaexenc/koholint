@@ -34,6 +34,7 @@ import {validateName} from "@/lib/validateName";
 import {type ConnectionStatus} from "@/lib/wsClient";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
 import {
+	MAX_VIEW_WORLD_PX,
 	type ChatMessage,
 	type ConnId,
 	type PlayerSnapshot,
@@ -161,6 +162,10 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 	const gameRef = useRef<OnlineGame | null>(null);
 	const wsRef = useRef<TabSyncedClient | null>(null);
 	const chatInputRef = useRef<HTMLInputElement | null>(null);
+	// latest viewport extent (world px) the renderer reported, so a welcome —
+	// whose session starts with the maximal default interest area — can be
+	// answered with the real extent right away.
+	const viewExtentRef = useRef<{w: number; h: number} | null>(null);
 
 	useEffect(() => {
 		gameRef.current?.setInputEnabled(!modalOpen);
@@ -207,6 +212,8 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 			if (!game) return;
 			setIsAdmin(msg.isAdmin);
 			setServerNameError(undefined);
+			const view = viewExtentRef.current;
+			if (view) wsRef.current?.sendView(view.w, view.h);
 			setMessages(msg.chatBacklog.slice(-CHAT_BUFFER_MAX));
 			const next = new Map<ConnId, PlayerListEntry>();
 			for (const p of msg.players) next.set(p.connId, toPlayerListEntry(p));
@@ -388,6 +395,11 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 		[isAdmin, clickTeleport]
 	);
 
+	const onViewChange = useCallback((w: number, h: number) => {
+		viewExtentRef.current = {w, h};
+		wsRef.current?.sendView(w, h);
+	}, []);
+
 	// the stored width is clamped here once; the panel and the camera inset must
 	// agree on the same value or the map edge lands under (or short of) the chat.
 	// on small screens the panel overlays the whole viewport instead of docking,
@@ -400,13 +412,19 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 
 	const {canvasProps, state, playerTile} = useMapRenderer({
 		mapUrl,
-		follow,
+		// only admins get the follow toggle, so everyone else is pinned to their
+		// character — which is also what the server-side interest area assumes.
+		follow: follow || !isAdmin,
 		// the overlay is an admin diagnostic; a stored `true` stays inert for
 		// everyone else.
 		debug: debug && isAdmin,
 		insetLeft: uiSide === "left" ? chatInset : 0,
 		insetRight: uiSide === "right" ? chatInset : 0,
 		clickToMove,
+		// admins zoom without limit and see every player; everyone else is
+		// capped so no viewport can outgrow the server's interest area.
+		maxViewWorldPx: isAdmin ? null : MAX_VIEW_WORLD_PX,
+		onViewChange,
 		init,
 		step,
 		onTileClick,

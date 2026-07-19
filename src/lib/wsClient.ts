@@ -153,6 +153,14 @@ export class WsClient {
 		this.sendNow({type: "teleport", x, y});
 	}
 
+	// dropped when the socket is down: the server resets a (re)joining session's
+	// interest area to the maximal default anyway, and the page re-reports on
+	// welcome.
+	sendView(w: number, h: number): void {
+		if (this.status !== "connected") return;
+		this.sendNow({type: "view", w, h});
+	}
+
 	private send(msg: ClientMessage): void {
 		if (this.status === "connected" && this.socket?.readyState === WebSocket.OPEN) {
 			this.sendNow(msg);

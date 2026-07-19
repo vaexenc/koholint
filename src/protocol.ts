@@ -90,6 +90,14 @@ export type ClientInput = {
 
 export type ClientTeleport = {readonly type: "teleport"; readonly x: number; readonly y: number};
 
+// the tab's viewport extent in world pixels (window size / camera scale). the
+// server sizes this client's interest area from it so snapshots only carry
+// players the client could actually display. capped at MAX_VIEW_WORLD_PX per
+// axis for non-admins — the same cap the client enforces as its max zoom-out —
+// so an inflated report can't widen the interest area past what a legitimate
+// viewport could show.
+export type ClientView = {readonly type: "view"; readonly w: number; readonly h: number};
+
 export type ClientLeave = {readonly type: "leave"};
 
 export type ClientMessage =
@@ -98,7 +106,21 @@ export type ClientMessage =
 	| ClientChat
 	| ClientInput
 	| ClientTeleport
+	| ClientView
 	| ClientLeave;
+
+// --- Viewport / interest contract ----------------------------------------
+// most world pixels a non-admin viewport may show per axis: the client derives
+// its minimum zoom from this (window px / MAX_VIEW_WORLD_PX) and the server
+// clamps reported view extents to it. admins are exempt on both ends. 896px is
+// 56 tiles (16px) — 35% of the 160-tile map width at full zoom-out.
+export const MAX_VIEW_WORLD_PX = 896;
+// interest slack beyond the visible rect, covering interpolation delay, the
+// camera spring lag and the server's coarser view of the camera. the exit
+// margin is wider than the entry margin so a player oscillating on the
+// boundary doesn't flap between included and removed every snapshot.
+export const INTEREST_MARGIN_PX = 64;
+export const INTEREST_EXIT_MARGIN_PX = 96;
 
 // --- Server -> Client ----------------------------------------------------
 
@@ -144,11 +166,19 @@ export type ServerMessage =
 	| ServerLeave;
 
 // --- Binary snapshot codec ----------------------------------------------
-// Layout: u32 serverTick, u32 ackTickForYou, u16 playerCount,
+// Layout: u32 serverTick, u32 ackTickForYou, u16 playerCount, u16 removedCount,
 // then per-player: u16 idIndex, f32 x, f32 y, u8 dirFlags, u8 animByte,
-// u8 jumpByte. dirFlags packs facing (bits 0-1), a walking flag (bit 2), and a
-// jumping flag (bit 3). jumpByte is the vertical hop/teleport lift in whole
-// pixels (0-255), letting remotes arc rather than slide across a hole.
+// u8 jumpByte, then removedCount u16 idIndexes. dirFlags packs facing
+// (bits 0-1), a walking flag (bit 2), and a jumping flag (bit 3). jumpByte is
+// the vertical hop/teleport lift in whole pixels (0-255), letting remotes arc
+// rather than slide across a hole.
+//
+// snapshots are per-recipient deltas: a pose appears only when it entered the
+// recipient's interest area or changed since the previous snapshot round, so a
+// missing idIndex means "unchanged", not "gone". the removed list is the
+// explicit "left your interest area" signal — the client despawns those
+// remotes. the recipient's own pose is echoed every snapshot regardless, so
+// prediction/reconciliation never depends on the delta rules.
 //
 // ackTickForYou is u32 (not u16): it carries an unbounded tick counter that
 // the client uses as the reconciliation anchor, so a u16 would wrap after
@@ -158,7 +188,7 @@ export type ServerMessage =
 // The mapping is broadcast in `welcome` (and in `join`) so clients can
 // resolve idIndex -> connId without putting a string in every frame.
 
-export const SNAPSHOT_HEADER_BYTES = 4 + 4 + 2;
+export const SNAPSHOT_HEADER_BYTES = 4 + 4 + 2 + 2;
 export const SNAPSHOT_PLAYER_BYTES = 2 + 4 + 4 + 1 + 1 + 1;
 
 // walk-phase wire encoding. the simulation keeps animTimeMs bounded so the byte
@@ -212,13 +242,17 @@ const JUMPING_FLAG = 1 << 3;
 export function encodeSnapshot(
 	serverTick: number,
 	ackTickForYou: number,
-	poses: ReadonlyArray<SnapshotPose>
+	poses: ReadonlyArray<SnapshotPose>,
+	removed: ReadonlyArray<number>
 ): ArrayBuffer {
-	const buf = new ArrayBuffer(SNAPSHOT_HEADER_BYTES + poses.length * SNAPSHOT_PLAYER_BYTES);
+	const buf = new ArrayBuffer(
+		SNAPSHOT_HEADER_BYTES + poses.length * SNAPSHOT_PLAYER_BYTES + removed.length * 2
+	);
 	const view = new DataView(buf);
 	view.setUint32(0, serverTick >>> 0, true);
 	view.setUint32(4, ackTickForYou >>> 0, true);
 	view.setUint16(8, poses.length & 0xffff, true);
+	view.setUint16(10, removed.length & 0xffff, true);
 	let offset = SNAPSHOT_HEADER_BYTES;
 	for (const p of poses) {
 		view.setUint16(offset, p.idIndex & 0xffff, true);
@@ -233,6 +267,10 @@ export function encodeSnapshot(
 		view.setUint8(offset + 12, Math.max(0, Math.min(255, Math.round(p.jumpOffset))));
 		offset += SNAPSHOT_PLAYER_BYTES;
 	}
+	for (const idIndex of removed) {
+		view.setUint16(offset, idIndex & 0xffff, true);
+		offset += 2;
+	}
 	return buf;
 }
 
@@ -240,6 +278,8 @@ export type DecodedSnapshot = {
 	readonly serverTick: number;
 	readonly ackTickForYou: number;
 	readonly poses: ReadonlyArray<SnapshotPose>;
+	// idIndexes that left this client's interest area — despawn their remotes.
+	readonly removed: ReadonlyArray<number>;
 };
 
 export function decodeSnapshot(buf: ArrayBuffer): DecodedSnapshot {
@@ -247,6 +287,7 @@ export function decodeSnapshot(buf: ArrayBuffer): DecodedSnapshot {
 	const serverTick = view.getUint32(0, true);
 	const ackTickForYou = view.getUint32(4, true);
 	const count = view.getUint16(8, true);
+	const removedCount = view.getUint16(10, true);
 	const poses: SnapshotPose[] = [];
 	let offset = SNAPSHOT_HEADER_BYTES;
 	for (let i = 0; i < count; i++) {
@@ -268,5 +309,10 @@ export function decodeSnapshot(buf: ArrayBuffer): DecodedSnapshot {
 		});
 		offset += SNAPSHOT_PLAYER_BYTES;
 	}
-	return {serverTick, ackTickForYou, poses};
+	const removed: number[] = [];
+	for (let i = 0; i < removedCount; i++) {
+		removed.push(view.getUint16(offset, true));
+		offset += 2;
+	}
+	return {serverTick, ackTickForYou, poses, removed};
 }

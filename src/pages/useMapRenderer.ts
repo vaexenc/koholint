@@ -42,6 +42,8 @@ const MAX_FRAME_DT = 0.1;
 // pointer travel under this many CSS pixels between down and up is treated
 // as a click (teleport) rather than a drag (pan).
 const CLICK_MAX_TRAVEL_PX = 4;
+// floor between onViewChange reports; changes during a zoom gesture coalesce.
+const VIEW_REPORT_MIN_INTERVAL_MS = 250;
 // a steer release this quick (and within CLICK_MAX_TRAVEL_PX) still counts as
 // a tap/click. steering engages instantly on press for zero input lag, so a
 // tap steers for a few ticks first — harmless, since where a click means
@@ -177,6 +179,15 @@ export type UseMapRendererParams = {
 	// routes the left mouse/pen button to hold-to-walk steering (like touch)
 	// instead of camera panning. only meaningful when init supplies onSteer.
 	clickToMove?: boolean;
+	// caps how many world pixels the viewport may show per axis by raising the
+	// minimum zoom to windowPx / maxViewWorldPx — the limit holds on any window
+	// size. null lifts the cap (admins, offline map).
+	maxViewWorldPx?: number | null;
+	// reports the viewport extent in world pixels (from the zoom the camera is
+	// heading to, so a zoom-out widens the report before the spring settles).
+	// throttled and only fired on meaningful change; feeds the server's
+	// interest area online.
+	onViewChange?: (w: number, h: number) => void;
 	init: (ctx: MapRendererInitContext) => Promise<MapRendererSetup> | MapRendererSetup;
 	// advance simulation by dtMs; return the interpolation alpha (0..1) used
 	// when drawing characters between their previous and current poses.
@@ -222,10 +233,6 @@ type Steer = {
 	startTime: number;
 };
 
-function clampScale(scale: number): number {
-	return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
-}
-
 export type UseMapRendererResult = {
 	canvasProps: {
 		ref: React.RefObject<HTMLCanvasElement | null>;
@@ -251,6 +258,8 @@ export function useMapRenderer({
 	insetLeft = 0,
 	insetRight = 0,
 	clickToMove = false,
+	maxViewWorldPx = null,
+	onViewChange,
 	init,
 	step,
 	onTileClick,
@@ -294,6 +303,8 @@ export function useMapRenderer({
 	const followRef = useRef(follow);
 	const debugRef = useRef(debug);
 	const clickToMoveRef = useRef(clickToMove);
+	const maxViewRef = useRef(maxViewWorldPx);
+	const onViewChangeRef = useRef(onViewChange);
 	const insetsRef = useRef({left: insetLeft, right: insetRight});
 	// the insets the camera math actually uses; spring toward insetsRef in the
 	// render loop so showing/hiding/resizing/side-switching the overlay glides
@@ -311,6 +322,12 @@ export function useMapRenderer({
 	useEffect(() => {
 		clickToMoveRef.current = clickToMove;
 	}, [clickToMove]);
+	useEffect(() => {
+		maxViewRef.current = maxViewWorldPx;
+	}, [maxViewWorldPx]);
+	useEffect(() => {
+		onViewChangeRef.current = onViewChange;
+	});
 	useEffect(() => {
 		insetsRef.current = {left: insetLeft, right: insetRight};
 	}, [insetLeft, insetRight]);
@@ -343,6 +360,18 @@ export function useMapRenderer({
 		const {left, right} = easedInsetsRef.current;
 		return {start: left, end: Math.max(left, window.innerWidth - right)};
 	};
+
+	// live zoom floor: the absolute minimum, raised (when a view cap applies)
+	// so the window can never show more than maxViewWorldPx world pixels per
+	// axis — computed against the current window size, so any viewport obeys
+	// the same world-space limit.
+	const minScale = () => {
+		const maxView = maxViewRef.current;
+		if (!maxView) return MIN_SCALE;
+		return Math.max(MIN_SCALE, window.innerWidth / maxView, window.innerHeight / maxView);
+	};
+
+	const clampScale = (scale: number) => Math.min(MAX_SCALE, Math.max(minScale(), scale));
 
 	useEffect(() => {
 		let cancelled = false;
@@ -470,6 +499,7 @@ export function useMapRenderer({
 				const startTime = performance.now();
 				let lastFrameTime = 0;
 				let hadPlayerTarget = false;
+				let lastViewReport: {w: number; h: number; at: number} | null = null;
 				const renderFrame = (now: number) => {
 					const dpr = window.devicePixelRatio || 1;
 					const cam = cameraRef.current;
@@ -479,6 +509,33 @@ export function useMapRenderer({
 							: Math.min((now - lastFrameTime) / 1000, MAX_FRAME_DT);
 					lastFrameTime = now;
 					const k = dt > 0 ? 1 - Math.exp(-CAMERA_SMOOTHING * dt) : 0;
+
+					// the zoom floor moves with window size and with the cap being
+					// applied or lifted (admin status arrives after load); raising
+					// the target lets the spring glide the camera into compliance.
+					const minS = minScale();
+					if (cam.targetScale < minS) cam.targetScale = minS;
+
+					// report the viewport's world extent from the wider of the live
+					// and target scale: a zoom-out widens the report before the
+					// spring settles, and mid-zoom-in the still-wide live view keeps
+					// its coverage until the spring actually shrinks it. re-fires
+					// only on meaningful change, at most a few times a second.
+					const onViewChange = onViewChangeRef.current;
+					if (onViewChange) {
+						const reportScale = Math.min(cam.scale, cam.targetScale);
+						const viewW = window.innerWidth / reportScale;
+						const viewH = window.innerHeight / reportScale;
+						const prev = lastViewReport;
+						const changed =
+							!prev ||
+							Math.abs(viewW - prev.w) > prev.w * 0.02 ||
+							Math.abs(viewH - prev.h) > prev.h * 0.02;
+						if (changed && (!prev || now - prev.at > VIEW_REPORT_MIN_INTERVAL_MS)) {
+							lastViewReport = {w: viewW, h: viewH, at: now};
+							onViewChange(viewW, viewH);
+						}
+					}
 
 					// ease the overlay insets with the same spring as the camera so a
 					// chat show/hide/resize/side-switch moves the clamp limits — and

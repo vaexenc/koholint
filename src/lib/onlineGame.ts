@@ -190,6 +190,10 @@ export class OnlineGame {
 		this.serverClock.syncToServerTick(snap.serverTick);
 		const now = performance.now();
 		const dtSec = this.tickIntervalMs / 1000;
+		for (const idIndex of snap.removed) {
+			const remote = this.remotes.get(idIndex);
+			if (remote) this.hideRemote(remote);
+		}
 		for (const pose of snap.poses) {
 			if (pose.idIndex === this.selfIdIndex) {
 				if (!this.controlling) {
@@ -228,7 +232,9 @@ export class OnlineGame {
 				continue;
 			}
 			const remote = this.remotes.get(pose.idIndex);
-			if (remote) recordRemotePose(remote, pose, now);
+			if (!remote) continue;
+			if (!remote.visible) this.showRemote(remote);
+			recordRemotePose(remote, pose, now);
 		}
 	}
 
@@ -374,7 +380,8 @@ export class OnlineGame {
 			}
 			drawNameTag(ctx, name, color, screenX, screenY, textScale);
 		};
-		for (const r of this.remotesByConnId.values()) draw(r.character, r.profile.name, r.color);
+		for (const r of this.remotesByConnId.values())
+			if (r.visible) draw(r.character, r.profile.name, r.color);
 		if (this.selfSpawned) {
 			// the server derives a player's color the same way, so the self tag
 			// matches what everyone else sees without waiting for a broadcast.
@@ -457,7 +464,8 @@ export class OnlineGame {
 
 	private characterFor(connId: ConnId): BasicCharacter | null {
 		if (connId === this._selfConnId) return this.selfSpawned ? this.selfChar : null;
-		return this.remotesByConnId.get(connId)?.character ?? null;
+		const remote = this.remotesByConnId.get(connId);
+		return remote?.visible ? remote.character : null;
 	}
 
 	// deferred until the welcome's spawn is applied (see step). idempotent
@@ -475,6 +483,10 @@ export class OnlineGame {
 		this.renderer.ensureLoaded([this.selfChar]).catch(() => {});
 	}
 
+	// registers the player in the roster and preloads its sprite, but does not
+	// materialize the character: snapshots are interest-culled, so the entity
+	// appears only once the server ships a pose for it (showRemote) and hides
+	// again when the removed list names it (hideRemote).
 	private addRemote(player: PlayerSnapshot): void {
 		if (this.remotesByConnId.has(player.connId)) return;
 		const char = createBasicCharacter({
@@ -485,37 +497,43 @@ export class OnlineGame {
 			y: player.y,
 			facing: player.facing,
 		});
-		this.world.addCharacter(char, new StaticInputProvider());
 		const entry: RemoteEntry = {
 			connId: player.connId,
 			idIndex: player.idIndex,
 			profile: player.profile,
 			color: player.color,
 			character: char,
-			samples: [
-				{
-					x: player.x,
-					y: player.y,
-					facing: player.facing,
-					walking: false,
-					animByte: 0,
-					jumpOffset: 0,
-					at: performance.now(),
-				},
-			],
+			samples: [],
+			visible: false,
 		};
 		this.remotes.set(player.idIndex, entry);
 		this.remotesByConnId.set(player.connId, entry);
 		this.renderer.ensureLoaded([char]).catch(() => {});
 	}
 
+	// the first pose after showing seeds the sample buffer, so the character
+	// takes its on-screen position from interpolation before it ever renders.
+	private showRemote(remote: RemoteEntry): void {
+		if (remote.visible) return;
+		remote.visible = true;
+		remote.samples.length = 0;
+		this.world.addCharacter(remote.character, new StaticInputProvider());
+	}
+
+	private hideRemote(remote: RemoteEntry): void {
+		if (!remote.visible) return;
+		remote.visible = false;
+		remote.samples.length = 0;
+		this.world.removeCharacter(remote.character.id);
+	}
+
 	private removeRemote(connId: ConnId): void {
 		const r = this.remotesByConnId.get(connId);
 		if (!r) return;
+		this.hideRemote(r);
 		this.remotes.delete(r.idIndex);
 		this.remotesByConnId.delete(connId);
 		this.chatBubbles.delete(connId);
-		this.world.removeCharacter(r.character.id);
 	}
 
 	private invalidateRemote(connId: ConnId): void {

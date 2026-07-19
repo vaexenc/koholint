@@ -25,6 +25,13 @@ const CHAT_MAX_CHARS = 500;
 // exceed the 30Hz tick rate; sized above 240Hz. batches are redundant (each carries
 // all unacked inputs) so a dropped flush loses nothing — this only caps a flood.
 const INPUT_MAX_PER_SECOND = 250;
+// view reports change on zoom/resize only and the client already self-throttles
+// to ~4/s (VIEW_REPORT_MIN_INTERVAL_MS), so a legit client never reaches this
+// cap and its widening reports are never dropped. this bounds a flood only; a
+// client that floods past the cap can pin its *own* interest area stale (small
+// or large) for up to a second — it harms nobody else, and the next accepted
+// report corrects it.
+const VIEW_MAX_PER_SECOND = 10;
 const PING_INTERVAL_MS = 15_000;
 const PONG_TIMEOUT_MS = 30_000;
 
@@ -55,6 +62,7 @@ type Connection = {
 	session: Session;
 	chatTimestamps: number[];
 	inputTimestamps: number[];
+	viewTimestamps: number[];
 	lastPongAt: number;
 };
 
@@ -254,6 +262,7 @@ export class WsServer {
 			session,
 			chatTimestamps: [],
 			inputTimestamps: [],
+			viewTimestamps: [],
 			lastPongAt: Date.now(),
 		};
 		this.byConnId.set(session.connId, conn);
@@ -325,6 +334,9 @@ export class WsServer {
 				return;
 			case "teleport":
 				this.onTeleport(conn, msg.x, msg.y);
+				return;
+			case "view":
+				this.onView(conn, msg.w, msg.h);
 				return;
 			case "leave":
 				try {
@@ -405,8 +417,21 @@ export class WsServer {
 		this.room.teleport(conn.connId, x, y);
 	}
 
+	private onView(conn: Connection, w: number, h: number): void {
+		const now = Date.now();
+		conn.viewTimestamps = conn.viewTimestamps.filter((t) => now - t < 1000);
+		if (conn.viewTimestamps.length >= VIEW_MAX_PER_SECOND) return;
+		conn.viewTimestamps.push(now);
+		this.room.setView(conn.connId, w, h);
+	}
+
 	private dropConnection(conn: Connection, why: string, action: "leave" | "reconnect"): void {
-		if (!this.byConnId.has(conn.connId)) return;
+		// identity, not just presence: a session_taken reconnect drops the old
+		// conn and registers the successor under the same connId synchronously,
+		// so the old socket's later close event re-enters here — matching only by
+		// connId would then delete the successor's live entry and tear down its
+		// session. bail unless this is still the registered conn.
+		if (this.byConnId.get(conn.connId) !== conn) return;
 		this.byConnId.delete(conn.connId);
 		const session = this.room.removeSession(conn.connId);
 		if (session) {

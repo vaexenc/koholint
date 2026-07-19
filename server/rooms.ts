@@ -14,7 +14,10 @@ import {World} from "@/game/world";
 import {
 	encodeAnimByte,
 	encodeSnapshot,
+	INTEREST_EXIT_MARGIN_PX,
+	INTEREST_MARGIN_PX,
 	MAX_INPUTS_PER_MESSAGE,
+	MAX_VIEW_WORLD_PX,
 	type ChatMessage,
 	type CoalescedInput,
 	type ConnId,
@@ -57,6 +60,16 @@ export type Session = {
 	inputProvider: StaticInputProvider;
 	pendingInputs: Map<number, CharacterInput>;
 	lastAppliedClientTick: number;
+	// world-px extents of this client's viewport, sizing its interest area.
+	// starts at the cap (safe over-coverage) until the client reports its own.
+	viewW: number;
+	viewH: number;
+	// idIndexes whose remote this client currently has materialized — the
+	// server-side half of the delta contract in the snapshot codec.
+	visible: Set<number>;
+	// pose as of the previous snapshot round, for change detection. compared in
+	// wire encoding so quantization can't produce phantom changes.
+	lastPose: SnapshotPose | null;
 };
 
 export type RoomDeps = {readonly map: TiledMap; readonly spawns: ReadonlyArray<SpawnRegion>};
@@ -68,6 +81,8 @@ export type RoomDeps = {readonly map: TiledMap; readonly spawns: ReadonlyArray<S
 export class Room {
 	readonly world: World;
 	readonly map: TiledMap;
+	private readonly mapPixelWidth: number;
+	private readonly mapPixelHeight: number;
 	private spawns: ReadonlyArray<SpawnRegion>;
 	private sessions = new Map<ConnId, Session>();
 	private byIdIndex = new Map<number, Session>();
@@ -89,6 +104,8 @@ export class Room {
 
 	constructor(deps: RoomDeps) {
 		this.map = deps.map;
+		this.mapPixelWidth = deps.map.width * deps.map.tilewidth;
+		this.mapPixelHeight = deps.map.height * deps.map.tileheight;
 		this.spawns = deps.spawns;
 		const solidGrid = buildSolidGrid(deps.map);
 		const terrainGrid = buildTerrainGrid(deps.map);
@@ -168,6 +185,10 @@ export class Room {
 			inputProvider,
 			pendingInputs: new Map(),
 			lastAppliedClientTick: 0,
+			viewW: MAX_VIEW_WORLD_PX,
+			viewH: MAX_VIEW_WORLD_PX,
+			visible: new Set(),
+			lastPose: null,
 		};
 		this.sessions.set(opts.connId, session);
 		this.byIdIndex.set(idIndex, session);
@@ -181,7 +202,18 @@ export class Room {
 		this.sessions.delete(connId);
 		this.byIdIndex.delete(session.idIndex);
 		this.freedIds.push(session.idIndex);
+		// purge the departed idIndex from every interest set now: the `leave`
+		// broadcast already despawns the remote client-side, and a recycled
+		// idIndex must read as newly-visible to everyone, not as already-known.
+		for (const other of this.sessions.values()) other.visible.delete(session.idIndex);
 		return session;
+	}
+
+	setView(connId: ConnId, w: number, h: number): void {
+		const session = this.sessions.get(connId);
+		if (!session) return;
+		session.viewW = Math.min(w, MAX_VIEW_WORLD_PX);
+		session.viewH = Math.min(h, MAX_VIEW_WORLD_PX);
 	}
 
 	queueInputs(connId: ConnId, ackTick: number, inputs: ReadonlyArray<CoalescedInput>): void {
@@ -295,10 +327,16 @@ export class Room {
 		if (this.serverTick % this.ticksPerSnapshot === 0) this.fanOutSnapshot();
 	}
 
+	// per-recipient delta fan-out: a pose ships only when it entered the
+	// recipient's interest area or changed since the previous round, so an idle
+	// crowd costs each client nothing but the header. the recipient's own pose
+	// always ships — reconciliation must not depend on the delta rules. every
+	// client still gets a frame every round: it carries the ack/clock anchor.
 	private fanOutSnapshot(): void {
-		const poses: SnapshotPose[] = [];
+		const changed = new Map<number, boolean>();
+		const poseById = new Map<number, SnapshotPose>();
 		for (const s of this.sessions.values()) {
-			poses.push({
+			const pose: SnapshotPose = {
 				idIndex: s.idIndex,
 				x: s.character.x,
 				y: s.character.y,
@@ -307,14 +345,83 @@ export class Room {
 				jumping: s.character.jump !== null || s.character.teleport !== null,
 				animByte: encodeAnimByte(s.character.animTimeMs),
 				jumpOffset: s.character.jumpOffsetY,
-			});
+			};
+			poseById.set(s.idIndex, pose);
+			changed.set(s.idIndex, s.lastPose === null || !samePose(s.lastPose, pose));
+			s.lastPose = pose;
 		}
-		for (const listener of this.listeners) {
-			for (const s of this.sessions.values()) {
-				const buf = encodeSnapshot(this.serverTick, s.lastAppliedClientTick, poses);
-				listener.sendBinary(s.connId, buf);
+		for (const recipient of this.sessions.values()) {
+			const poses: SnapshotPose[] = [];
+			const removed: number[] = [];
+			for (const subject of this.sessions.values()) {
+				const pose = poseById.get(subject.idIndex);
+				if (!pose) continue;
+				if (subject === recipient) {
+					poses.push(pose);
+					continue;
+				}
+				const wasVisible = recipient.visible.has(subject.idIndex);
+				if (this.inInterest(recipient, subject, wasVisible)) {
+					if (!wasVisible) {
+						recipient.visible.add(subject.idIndex);
+						poses.push(pose);
+					} else if (changed.get(subject.idIndex)) {
+						poses.push(pose);
+					}
+				} else if (wasVisible) {
+					recipient.visible.delete(subject.idIndex);
+					removed.push(subject.idIndex);
+				}
 			}
+			const buf = encodeSnapshot(
+				this.serverTick,
+				recipient.lastAppliedClientTick,
+				poses,
+				removed
+			);
+			for (const listener of this.listeners) listener.sendBinary(recipient.connId, buf);
 		}
+	}
+
+	// axis-aligned interest test. the recipient's camera center is derived with
+	// the same edge clamp the client's follow camera applies (center on the
+	// player, clamped so the view stays inside the map), so the box tracks what
+	// the client actually shows, not just a radius around the character. admins
+	// have no interest bounds — they see every player at any zoom.
+	private inInterest(recipient: Session, subject: Session, wasVisible: boolean): boolean {
+		if (recipient.isAdmin) return true;
+		const margin = wasVisible ? INTEREST_EXIT_MARGIN_PX : INTEREST_MARGIN_PX;
+		return (
+			this.inInterestAxis(
+				recipient.character.x,
+				subject.character.x,
+				recipient.viewW,
+				this.mapPixelWidth,
+				margin
+			) &&
+			this.inInterestAxis(
+				recipient.character.y,
+				subject.character.y,
+				recipient.viewH,
+				this.mapPixelHeight,
+				margin
+			)
+		);
+	}
+
+	private inInterestAxis(
+		recipientPos: number,
+		subjectPos: number,
+		view: number,
+		mapPixels: number,
+		margin: number
+	): boolean {
+		const half = view / 2;
+		const center =
+			mapPixels <= view
+				? mapPixels / 2
+				: Math.min(mapPixels - half, Math.max(half, recipientPos));
+		return Math.abs(subjectPos - center) <= half + margin;
 	}
 
 	broadcast(msg: ServerMessage): void {
@@ -348,6 +455,18 @@ export class Room {
 		while (this.byIdIndex.has(next)) next = this.nextIdIndex++;
 		return next;
 	}
+}
+
+function samePose(a: SnapshotPose, b: SnapshotPose): boolean {
+	return (
+		a.x === b.x &&
+		a.y === b.y &&
+		a.facing === b.facing &&
+		a.walking === b.walking &&
+		a.jumping === b.jumping &&
+		a.animByte === b.animByte &&
+		a.jumpOffset === b.jumpOffset
+	);
 }
 
 export type RoomListener = {
