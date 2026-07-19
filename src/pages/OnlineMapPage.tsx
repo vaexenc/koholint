@@ -1,21 +1,31 @@
-import {DEFAULT_CHAT_SETTINGS, type ChatSettings} from "@/components/Chat";
+import {AdminBadge} from "@/components/AdminBadge";
+import {chatDisplayText, DEFAULT_CHAT_SETTINGS, type ChatSettings} from "@/components/Chat";
 import ChatPanel, {
 	clampChatWidth,
+	clampPlayerListHeight,
 	DEFAULT_CHAT_WIDTH,
+	DEFAULT_PLAYER_LIST_HEIGHT,
 	type PlayerListEntry,
 	type UiSide,
 } from "@/components/ChatPanel";
+import ConnectionWidget, {type Mode} from "@/components/ConnectionWidget";
+import {HudBar} from "@/components/HudBar";
 import {LoadingScreen} from "@/components/LoadingScreen";
-import {SettingsDialog} from "@/components/SettingsDialog";
-import {Button} from "@/components/ui/button";
+import {PositionWidget} from "@/components/PositionWidget";
+import {ProfileDialog} from "@/components/ProfileDialog";
+import {ProfileWidget} from "@/components/ProfileWidget";
+import {SettingsCheckbox, SettingsWidget} from "@/components/SettingsWidget";
+import {readAdminToken} from "@/lib/adminToken";
 import {OnlineGame} from "@/lib/onlineGame";
+import {handOffPlayerPose, takePlayerPose} from "@/lib/playerPose";
 import {randomProfile} from "@/lib/randomProfile";
 import {getStored, setStored} from "@/lib/safeStorage";
+import {TabSyncedClient} from "@/lib/tabSync";
 import {useLatestRef} from "@/lib/useLatestRef";
 import {useLocalStorage} from "@/lib/useLocalStorage";
-import {cn} from "@/lib/utils";
+import {useIsSmallScreen} from "@/lib/useMediaQuery";
 import {validateName} from "@/lib/validateName";
-import {WsClient, type ConnectionStatus} from "@/lib/wsClient";
+import {type ConnectionStatus} from "@/lib/wsClient";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
 import {
 	type ChatMessage,
@@ -26,17 +36,11 @@ import {
 	type ServerWelcome,
 } from "@/protocol";
 import {paletteAccent} from "@/sprites/paletteAccent";
-import {ShieldCheck} from "lucide-react";
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 
 const DEFAULT_MAP_URL = "/maps/overworld-map.json";
-const ADMIN_TOKEN_KEY = "koholint:admin";
 const LEARNED_MOVEMENT_KEY = "koholint:learnedMovement";
 const CHAT_BUFFER_MAX = 500;
-
-function readAdminToken(): string | undefined {
-	return getStored(ADMIN_TOKEN_KEY) || undefined;
-}
 
 function buildWsUrl(): string {
 	const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -67,6 +71,10 @@ function selfPlayerListEntry(connId: ConnId, profile: Profile): PlayerListEntry 
 	};
 }
 
+function sameProfile(a: Profile, b: Profile): boolean {
+	return a.name === b.name && a.avatarId === b.avatarId && a.paletteId === b.paletteId;
+}
+
 // the one screen the player sees:
 //   preMap → loading (map fetch in flight)
 //   joining → loading (ws hello in flight; players auto-join with a random or
@@ -75,17 +83,30 @@ function selfPlayerListEntry(connId: ConnId, profile: Profile): PlayerListEntry 
 // a map-load error overlays everything below.
 type JoinPhase = {kind: "preMap"} | {kind: "joining"} | {kind: "joined"};
 
-type MapPageProps = {mapUrl?: string};
+type MapPageProps = {
+	mapUrl?: string;
+	onModeChange: (mode: Mode) => void;
+};
 
-function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
+function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 	const [profile, setProfile] = useLocalStorage<Profile>("koholint:profile", randomProfile);
 	const [follow, setFollow] = useLocalStorage("koholint:online.follow", true);
+	const [debug, setDebug] = useLocalStorage("koholint:online.debug", false);
+	const [clickTeleport, setClickTeleport] = useLocalStorage(
+		"koholint:online.clickTeleport",
+		true
+	);
+	const [chatBubbles, setChatBubbles] = useLocalStorage("koholint:online.chatBubbles", true);
+	const [nameTags, setNameTags] = useLocalStorage("koholint:online.nameTags", true);
 	const [chatSettings, setChatSettings] = useLocalStorage<ChatSettings>(
 		"koholint:chat.settings",
 		DEFAULT_CHAT_SETTINGS
 	);
 	const [chatWidth, setChatWidth] = useLocalStorage("koholint:chat.width", DEFAULT_CHAT_WIDTH);
-	const [chatHidden, setChatHidden] = useState(false);
+	// on small screens the chat is a full-screen overlay, so it starts hidden
+	// there — the map is the first thing a phone user should see.
+	const smallScreen = useIsSmallScreen();
+	const [chatHidden, setChatHidden] = useState(smallScreen);
 	const [storedUiSide, setUiSide] = useLocalStorage<UiSide>("koholint:ui.side", "right");
 	// the stored value is untyped json; anything unexpected falls back to right.
 	const uiSide: UiSide = storedUiSide === "left" ? "left" : "right";
@@ -93,8 +114,12 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		"koholint:chat.playerListCollapsed",
 		false
 	);
+	const [playerListHeight, setPlayerListHeight] = useLocalStorage(
+		"koholint:chat.playerListHeight",
+		DEFAULT_PLAYER_LIST_HEIGHT
+	);
 
-	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [profileOpen, setProfileOpen] = useState(false);
 	const [status, setStatus] = useState<ConnectionStatus>("idle");
 	const [phase, setPhase] = useState<JoinPhase>({kind: "preMap"});
 	const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
@@ -103,17 +128,50 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	const [serverNameError, setServerNameError] = useState<string | undefined>(undefined);
 
 	const profileRef = useLatestRef(profile);
+	const chatBubblesRef = useLatestRef(chatBubbles);
+	const nameTagsRef = useLatestRef(nameTags);
+	const chatSettingsRef = useLatestRef(chatSettings);
 	const phaseRef = useLatestRef(phase);
-	const settingsOpenRef = useLatestRef(settingsOpen);
+	const profileOpenRef = useLatestRef(profileOpen);
 	const gameRef = useRef<OnlineGame | null>(null);
-	const wsRef = useRef<WsClient | null>(null);
+	const wsRef = useRef<TabSyncedClient | null>(null);
+	const chatInputRef = useRef<HTMLInputElement | null>(null);
 
-	// pause player movement while the settings/avatar dialog is open so its keys
+	// pause player movement while the profile dialog is open so its keys
 	// (typing, focus nav) don't drive the character. the editable-target guard
 	// in KeyboardInputProvider already covers the chat box and name field.
 	useEffect(() => {
-		gameRef.current?.setKeyboardEnabled(!settingsOpen);
-	}, [settingsOpen]);
+		gameRef.current?.setKeyboardEnabled(!profileOpen);
+	}, [profileOpen]);
+
+	// Enter jumps into the chat input when nothing (map/canvas or the page body)
+	// holds focus, so players can start typing without reaching for the mouse.
+	// while a real control is focused — the input itself, a widget, the profile
+	// dialog — Enter keeps its normal meaning. the input only exists while chat is
+	// visible, so a null ref (hidden chat) is a no-op.
+	useEffect(() => {
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.key !== "Enter" || e.isComposing || e.defaultPrevented) return;
+			const active = document.activeElement;
+			const focusFree =
+				active === null || active === document.body || active instanceof HTMLCanvasElement;
+			if (!focusFree) return;
+			const input = chatInputRef.current;
+			if (!input) return;
+			e.preventDefault();
+			input.focus();
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, []);
+
+	useEffect(() => {
+		gameRef.current?.setChatBubblesEnabled(chatBubbles);
+	}, [chatBubbles]);
+
+	useEffect(() => {
+		gameRef.current?.setNameTagsEnabled(nameTags);
+	}, [nameTags]);
 
 	const playerList = useMemo(() => [...players.values()], [players]);
 
@@ -158,23 +216,33 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		gameRef.current?.applyLeave(connId);
 	}, []);
 
-	const handleProfileChanged = useCallback((msg: ServerProfileChanged) => {
-		setPlayers((prev) => {
-			const next = new Map(prev);
-			next.set(msg.connId, {
-				connId: msg.connId,
-				name: msg.profile.name,
-				color: msg.color,
-				avatarId: msg.profile.avatarId,
-				paletteId: msg.profile.paletteId,
+	const handleProfileChanged = useCallback(
+		(msg: ServerProfileChanged) => {
+			setPlayers((prev) => {
+				const next = new Map(prev);
+				next.set(msg.connId, {
+					connId: msg.connId,
+					name: msg.profile.name,
+					color: msg.color,
+					avatarId: msg.profile.avatarId,
+					paletteId: msg.profile.paletteId,
+				});
+				return next;
 			});
-			return next;
-		});
-		gameRef.current?.applyProfileChanged(msg);
-	}, []);
+			gameRef.current?.applyProfileChanged(msg);
+			// a change to our own profile means another tab of this identity
+			// made the edit; adopt it so this tab's state (and its sprite, via
+			// the profile effect) follows. the equality guard stops the
+			// setProfile round-trip from ping-ponging with the server.
+			if (msg.connId === gameRef.current?.selfConnId) {
+				setProfile((prev) => (sameProfile(prev, msg.profile) ? prev : msg.profile));
+			}
+		},
+		[setProfile]
+	);
 
 	useEffect(() => {
-		const ws = new WsClient({
+		const ws = new TabSyncedClient({
 			url: buildWsUrl(),
 			getProfile: () => profileRef.current,
 			getAdminToken: readAdminToken,
@@ -187,7 +255,14 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 				const ws = wsRef.current;
 				if (ws) gameRef.current?.applySnapshot(snap, ws);
 			},
-			onChat: (m) => setMessages((prev) => appendChat(prev, m)),
+			onChat: (m) => {
+				setMessages((prev) => appendChat(prev, m));
+				if (m.kind === "chat")
+					gameRef.current?.pushChatBubble(
+						m.senderId,
+						chatDisplayText(m, chatSettingsRef.current.obscenityMode)
+					);
+			},
 			onPresence: (m) => setMessages((prev) => appendChat(prev, m)),
 			onSystem: (m) => setMessages((prev) => appendChat(prev, m)),
 			onJoin: handleJoin,
@@ -195,7 +270,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 			onProfileChanged: handleProfileChanged,
 			onProfileRejected: (m) => {
 				// a live setProfile rejection during play surfaces the error on
-				// the next Settings open. a pre-join rejection (a stale invalid
+				// the next profile-dialog open. a pre-join rejection (a stale invalid
 				// name) is recovered silently: swap in a fresh random name —
 				// keeping the chosen avatar/palette — that WsClient then re-sends
 				// on its bounded reconnect.
@@ -216,6 +291,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		handleProfileChanged,
 		phaseRef,
 		profileRef,
+		chatSettingsRef,
 		setProfile,
 	]);
 
@@ -245,18 +321,30 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 				onMovementLearned: () => setStored(LEARNED_MOVEMENT_KEY, "1"),
 			});
 			// honor a dialog already open when the map finishes loading.
-			game.setKeyboardEnabled(!settingsOpenRef.current);
+			game.setKeyboardEnabled(!profileOpenRef.current);
+			game.setChatBubblesEnabled(chatBubblesRef.current);
+			game.setNameTagsEnabled(nameTagsRef.current);
 			gameRef.current = game;
+			// arriving from offline mode: start the camera where the player
+			// stood so the follow spring pans smoothly from there to the
+			// server-assigned position. on a fresh load there's no meaningful
+			// prior viewpoint — no focus, and the renderer cuts to the player
+			// when the welcome places it.
+			const from = takePlayerPose(mapUrl);
 			return {
 				follow: game.followTarget.bind(game),
-				initialFocus: {x: game.spawn.x, y: game.spawn.y},
+				initialFocus: from ? {x: from.x, y: from.y} : null,
 				drawScreenOverlay: game.drawScreenOverlay.bind(game),
 				dispose: () => {
+					// leaving the page (e.g. switching to offline mode): let the
+					// offline map pick up where the player stood.
+					const pose = game.selfPose();
+					if (pose) handOffPlayerPose(mapUrl, pose);
 					gameRef.current = null;
 				},
 			};
 		},
-		[profileRef, settingsOpenRef]
+		[mapUrl, profileRef, profileOpenRef, chatBubblesRef, nameTagsRef]
 	);
 
 	const step = useCallback((dtMs: number) => {
@@ -265,21 +353,28 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 
 	const onTileClick = useCallback(
 		({worldX, worldY}: {worldX: number; worldY: number}) => {
-			if (!isAdmin) return;
+			if (!isAdmin || !clickTeleport) return;
 			wsRef.current?.sendTeleport(worldX, worldY);
 		},
-		[isAdmin]
+		[isAdmin, clickTeleport]
 	);
 
 	// the stored width is clamped here once; the panel and the camera inset must
 	// agree on the same value or the map edge lands under (or short of) the chat.
+	// on small screens the panel overlays the whole viewport instead of docking,
+	// so the camera keeps the full window.
 	const chatPanelWidth = clampChatWidth(chatWidth);
-	const chatInset = chatHidden ? 0 : chatPanelWidth;
+	const chatInset = chatHidden || smallScreen ? 0 : chatPanelWidth;
+	// switching the chat side mirrors the bottom cluster: the outer row flips so
+	// the dock keeps the far corner, and the pill flips so its contents mirror too.
+	const uiReversed = uiSide === "left";
 
-	const {canvasProps, state, zoom, cursor} = useMapRenderer({
+	const {canvasProps, state, playerTile} = useMapRenderer({
 		mapUrl,
 		follow,
-		debug: false,
+		// the overlay is an admin diagnostic; a stored `true` stays inert for
+		// everyone else.
+		debug: debug && isAdmin,
 		insetLeft: uiSide === "left" ? chatInset : 0,
 		insetRight: uiSide === "right" ? chatInset : 0,
 		init,
@@ -299,9 +394,6 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 		wsRef.current?.connect();
 	}, [phase.kind, state.status, profileRef, setProfile]);
 
-	const map = state.status === "ok" ? state.map : null;
-	const tileX = map && cursor ? Math.floor(cursor.x / map.tilewidth) : null;
-	const tileY = map && cursor ? Math.floor(cursor.y / map.tileheight) : null;
 	const onSendChat = useCallback((text: string) => wsRef.current?.sendChat(text), []);
 	const onNameChange = useCallback(
 		(name: string) => {
@@ -332,59 +424,6 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 				<LoadingScreen />
 			) : (
 				<>
-					<div
-						className={cn(
-							"absolute top-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur",
-							uiSide === "right" ? "left-2" : "right-2"
-						)}
-					>
-						<div className="flex flex-col gap-2">
-							{isAdmin && (
-								<div className="flex items-center gap-1.5 self-start rounded bg-amber-400/15 px-2 py-1 text-amber-300 ring-1 ring-inset ring-amber-400/30">
-									<ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-									<span className="font-semibold">admin</span>
-									<span className="text-amber-200/70">
-										· click tile to teleport
-									</span>
-								</div>
-							)}
-							<label className="flex items-center gap-2">
-								<input
-									type="checkbox"
-									checked={follow}
-									onChange={(e) => setFollow(e.target.checked)}
-								/>
-								follow player (wasd / arrows)
-							</label>
-							<SettingsDialog
-								open={settingsOpen}
-								onOpenChange={setSettingsOpen}
-								avatarId={profile.avatarId}
-								paletteId={profile.paletteId}
-								name={profile.name}
-								onNameChange={onNameChange}
-								serverNameError={serverNameError}
-								onChange={onAvatarPaletteChange}
-								trigger={
-									<Button size="sm" variant="secondary">
-										Settings
-									</Button>
-								}
-							/>
-						</div>
-						<div className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 tabular-nums">
-							<span className="text-neutral-400">zoom</span>
-							<span>{zoom.toFixed(2)}x</span>
-							<span className="text-neutral-400">pixel</span>
-							<span>
-								{cursor ? `${Math.floor(cursor.x)}, ${Math.floor(cursor.y)}` : "—"}
-							</span>
-							<span className="text-neutral-400">tile</span>
-							<span>
-								{tileX !== null && tileY !== null ? `${tileX}, ${tileY}` : "—"}
-							</span>
-						</div>
-					</div>
 					<ChatPanel
 						messages={messages}
 						onSend={onSendChat}
@@ -400,7 +439,62 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 						players={playerList}
 						playerListCollapsed={playerListCollapsed}
 						onPlayerListCollapsedChange={setPlayerListCollapsed}
+						playerListHeight={clampPlayerListHeight(playerListHeight)}
+						onPlayerListHeightChange={setPlayerListHeight}
+						inputRef={chatInputRef}
 					/>
+					<ProfileDialog
+						open={profileOpen}
+						onOpenChange={setProfileOpen}
+						avatarId={profile.avatarId}
+						paletteId={profile.paletteId}
+						name={profile.name}
+						onNameChange={onNameChange}
+						serverNameError={serverNameError}
+						onChange={onAvatarPaletteChange}
+					/>
+					<HudBar reversed={uiReversed}>
+						<ConnectionWidget
+							mode="online"
+							onModeChange={onModeChange}
+							status={status}
+							playerCount={playerList.length}
+							onReconnect={() => wsRef.current?.connect()}
+						/>
+						<PositionWidget playerTile={playerTile} />
+						<ProfileWidget onOpenProfile={() => setProfileOpen(true)} />
+						<SettingsWidget>
+							<SettingsCheckbox
+								checked={chatBubbles}
+								onChange={setChatBubbles}
+								label="Chat bubbles"
+							/>
+							<SettingsCheckbox
+								checked={nameTags}
+								onChange={setNameTags}
+								label="Player names"
+							/>
+						</SettingsWidget>
+						{isAdmin && (
+							<AdminBadge>
+								<SettingsCheckbox
+									checked={follow}
+									onChange={setFollow}
+									label="Camera follow"
+								/>
+								<SettingsCheckbox
+									checked={debug}
+									onChange={setDebug}
+									label="Debug overlay"
+								/>
+								<SettingsCheckbox
+									checked={clickTeleport}
+									onChange={setClickTeleport}
+									label="Click to teleport"
+								/>
+							</AdminBadge>
+						)}
+					</HudBar>
 				</>
 			)}
 		</div>

@@ -1,6 +1,7 @@
 import {stepCharacter, type BasicCharacter} from "@/game/character";
 import {NEUTRAL_INPUT, type CharacterInput, type Direction} from "@/game/types";
 import type {World} from "@/game/world";
+import {InputBuffer} from "@/lib/inputBuffer";
 import {getStored, setStored} from "@/lib/safeStorage";
 import {
 	decodeAnimByteMs,
@@ -32,9 +33,10 @@ const CLOSE_PROTOCOL = 1008;
 // bound on auto-retries after a rejected hello (CLOSE_PROTOCOL before welcome).
 // guards against a pathological reject loop when fresh random names keep failing.
 const MAX_HELLO_REJECTS = 3;
-// drop inputs older than ~30s so a long disconnect doesn't shower the server
-// with stale frames on resume. matches MAX_INPUT_AGE_TICKS on the server.
-const INPUT_MAX_AGE_TICKS = 30 * 30;
+// ws close code the server sends when another connection presented our resume
+// token (e.g. a second browser). terminal: auto-reconnecting would steal the
+// session right back and the two clients would kick each other forever.
+const CLOSE_SESSION_TAKEN = 4002;
 
 export type WsClientOpts = {
 	readonly url: string;
@@ -71,7 +73,7 @@ export class WsClient {
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private intentionalClose = false;
 	private outbox: ClientMessage[] = [];
-	private inputBuffer = new Map<number, CharacterInput>();
+	private readonly inputBuffer = new InputBuffer();
 	private lastServerAck = 0;
 
 	constructor(opts: WsClientOpts) {
@@ -91,7 +93,7 @@ export class WsClient {
 	}
 
 	getRecordedInputs(): ReadonlyMap<number, CharacterInput> {
-		return this.inputBuffer;
+		return this.inputBuffer.entries();
 	}
 
 	connect(): void {
@@ -118,23 +120,23 @@ export class WsClient {
 	}
 
 	recordInput(tick: number, input: CharacterInput): void {
-		this.inputBuffer.set(tick, input);
-		const floor = tick - INPUT_MAX_AGE_TICKS;
-		for (const t of this.inputBuffer.keys()) if (t < floor) this.inputBuffer.delete(t);
+		this.inputBuffer.record(tick, input);
 	}
 
-	// sends every recorded input newer than the server's last ack and not
-	// past the current local tick. redundancy (each batch carries all
-	// unacked inputs) replaces retransmit logic.
 	flushInputs(currentTick: number): void {
-		if (this.status !== "connected" || this.inputBuffer.size === 0) return;
-		const inputs: CoalescedInput[] = [];
-		for (const [tick, input] of this.inputBuffer) {
-			if (tick > this.lastServerAck && tick <= currentTick) inputs.push({tick, input});
-		}
-		if (inputs.length === 0) return;
-		inputs.sort((a, b) => a.tick - b.tick);
-		this.sendNow({type: "input", ackTick: this.lastServerAck, inputs});
+		this.sendInputBatch(
+			this.lastServerAck,
+			this.inputBuffer.collectUnacked(this.lastServerAck, currentTick)
+		);
+	}
+
+	// also the forwarding path for input batches another tab recorded: both
+	// tabs stamp ticks in the same server numbering, so batches pass through
+	// verbatim. dropped (not queued) when the socket is down — stale inputs
+	// are worthless after a resume.
+	sendInputBatch(ackTick: number, inputs: ReadonlyArray<CoalescedInput>): void {
+		if (this.status !== "connected" || inputs.length === 0) return;
+		this.sendNow({type: "input", ackTick, inputs});
 	}
 
 	sendChat(text: string): void {
@@ -198,8 +200,7 @@ export class WsClient {
 		if (ev.data instanceof ArrayBuffer) {
 			const snap = decodeSnapshot(ev.data);
 			if (snap.ackTickForYou > this.lastServerAck) this.lastServerAck = snap.ackTickForYou;
-			for (const t of this.inputBuffer.keys())
-				if (t <= this.lastServerAck) this.inputBuffer.delete(t);
+			this.inputBuffer.pruneUpTo(this.lastServerAck);
 			this.events.onSnapshot?.(snap);
 			return;
 		}
@@ -245,7 +246,7 @@ export class WsClient {
 
 	private onClose(ev: CloseEvent): void {
 		this.socket = null;
-		if (this.intentionalClose || ev.code === 1000) {
+		if (this.intentionalClose || ev.code === 1000 || ev.code === CLOSE_SESSION_TAKEN) {
 			this.setStatus("closed");
 			return;
 		}

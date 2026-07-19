@@ -1,7 +1,12 @@
-import {AVATARS} from "@/components/avatar-picker/registry";
+import {AdminBadge} from "@/components/AdminBadge";
+import {resolveAvatarSprite} from "@/components/avatar-picker/registry";
+import ConnectionWidget, {type Mode} from "@/components/ConnectionWidget";
+import {HudBar} from "@/components/HudBar";
 import {LoadingScreen} from "@/components/LoadingScreen";
-import {SettingsDialog} from "@/components/SettingsDialog";
-import {Button} from "@/components/ui/button";
+import {PositionWidget} from "@/components/PositionWidget";
+import {ProfileDialog} from "@/components/ProfileDialog";
+import {ProfileWidget} from "@/components/ProfileWidget";
+import {SettingsCheckbox, SettingsWidget} from "@/components/SettingsWidget";
 import {
 	collectSpawnRegions,
 	createBasicCharacter,
@@ -13,28 +18,35 @@ import {
 	type BasicCharacter,
 	type World,
 } from "@/game";
-import {randomAvatarId, randomPaletteId} from "@/lib/randomProfile";
+import {hasAdminToken} from "@/lib/adminToken";
+import {handOffPlayerPose, loadPlayerPose, savePlayerPose, takePlayerPose} from "@/lib/playerPose";
+import {randomProfile} from "@/lib/randomProfile";
+import {useLatestRef} from "@/lib/useLatestRef";
 import {useLocalStorage} from "@/lib/useLocalStorage";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
-import {PALETTES} from "@/sprites/palettes";
+import type {Profile} from "@/protocol";
+import {resolvePaletteSwap} from "@/sprites/palettes";
 import {useCallback, useEffect, useRef, useState} from "react";
-
-function resolveAvatarSprite(avatarId: string) {
-	return (AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0]).sprite;
-}
-
-function resolvePaletteSwap(paletteId: string | null) {
-	if (!paletteId) return undefined;
-	return PALETTES.find((p) => p.id === paletteId)?.palette;
-}
 
 const DEFAULT_MAP_URL = "/maps/overworld-map.json";
 const PLAYER_CHARACTER_ID = "player-link";
-const MIN_TICK_RATE_HZ = 5;
-const MAX_TICK_RATE_HZ = 120;
 
 type MapPageProps = {
 	mapUrl?: string;
+	// set on the root route, where the connection pill switches back online;
+	// the standalone test map passes nothing and gets no pill.
+	onModeChange?: (mode: Mode) => void;
+	// on the root route teleporting is an admin power (online only), so the
+	// offline page there gets neither the feature nor the toggle; the test map
+	// opts in for everyone.
+	allowTeleport?: boolean;
+	// localStorage namespace for the settings toggles, so routes sharing this
+	// page (root offline, test map) persist them independently.
+	settingsScope?: string;
+	// localStorage key for the profile. defaults to the shared root slot the
+	// online page also uses, so identity carries across mode switches on the
+	// root route; other routes (test map) pass their own to stay isolated.
+	profileKey?: string;
 };
 
 type OfflineGame = {
@@ -44,70 +56,81 @@ type OfflineGame = {
 	invalidatePlayer: () => void;
 };
 
-function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
-	const [debug, setDebug] = useLocalStorage("koholint:map.debug", false);
-	const [follow, setFollow] = useLocalStorage("koholint:map.follow", false);
-	const [tickRate, setTickRate] = useLocalStorage("koholint:map.tickRate", DEFAULT_TICK_RATE_HZ);
-	const [avatarId, setAvatarId] = useLocalStorage<string>(
-		"koholint:player.avatarId",
-		randomAvatarId
+function MapPage({
+	mapUrl = DEFAULT_MAP_URL,
+	onModeChange,
+	allowTeleport = false,
+	settingsScope = "map",
+	profileKey = "koholint:profile",
+}: MapPageProps) {
+	const [debug, setDebug] = useLocalStorage(`koholint:${settingsScope}.debug`, false);
+	const [follow, setFollow] = useLocalStorage(`koholint:${settingsScope}.follow`, true);
+	const [clickTeleport, setClickTeleport] = useLocalStorage(
+		`koholint:${settingsScope}.clickTeleport`,
+		true
 	);
-	const [paletteId, setPaletteId] = useLocalStorage<string | null>(
-		"koholint:player.paletteId",
-		randomPaletteId
-	);
-	const [pickerOpen, setPickerOpen] = useState(false);
+	// offline only renders avatar/palette; the name rides along untouched.
+	const [profile, setProfile] = useLocalStorage<Profile>(profileKey, randomProfile);
+	const [profileOpen, setProfileOpen] = useState(false);
+	const [isAdmin] = useState(hasAdminToken);
 
 	// mirrored into refs so init (called once per map load) can read the
-	// current selection when first constructing the player without taking
+	// current values when first constructing the player without taking
 	// them as deps and re-running the whole load on every change.
-	const avatarIdRef = useRef(avatarId);
-	const paletteIdRef = useRef(paletteId);
-	const tickRateRef = useRef(tickRate);
+	const profileRef = useLatestRef(profile);
 	const gameRef = useRef<OfflineGame | null>(null);
 
-	useEffect(() => {
-		avatarIdRef.current = avatarId;
-	}, [avatarId]);
-
-	useEffect(() => {
-		paletteIdRef.current = paletteId;
-	}, [paletteId]);
-
-	useEffect(() => {
-		tickRateRef.current = tickRate;
-		gameRef.current?.clock.setTickRate(tickRate);
-	}, [tickRate]);
-
-	const init = useCallback((ctx: MapRendererInitContext) => {
-		const {map, world, renderer, mapPixelWidth, mapPixelHeight} = ctx;
-		const clock = new GameClock(tickRateRef.current);
-		const spawn = sampleSpawnOrCenter(collectSpawnRegions(map), mapPixelWidth, mapPixelHeight);
-		const player = createBasicCharacter({
-			id: PLAYER_CHARACTER_ID,
-			sprite: resolveAvatarSprite(avatarIdRef.current),
-			paletteSwap: resolvePaletteSwap(paletteIdRef.current),
-			x: spawn.x,
-			y: spawn.y,
-		});
-		world.addCharacter(player, new KeyboardInputProvider());
-		resolveCharacterCollision(player, world.grid, world.holes);
-		const invalidatePlayer = () => {
-			renderer.invalidate(player.id);
-			renderer.ensureLoaded([player]).catch(() => {});
-		};
-		gameRef.current = {world, clock, player, invalidatePlayer};
-		return {
-			follow: () => player,
-			initialFocus: {
-				x: player.x + player.spriteWidth / 2,
-				y: player.y + player.spriteHeight / 2,
-			},
-			dispose: () => {
-				gameRef.current = null;
-			},
-		};
-	}, []);
+	const init = useCallback(
+		(ctx: MapRendererInitContext) => {
+			const {map, world, renderer, mapPixelWidth, mapPixelHeight} = ctx;
+			const clock = new GameClock(DEFAULT_TICK_RATE_HZ);
+			// arriving from online mode keeps the player where they stood;
+			// otherwise the last session's persisted position; otherwise spawn
+			// fresh. the bounds check drops a stale stored pose from an older
+			// shape of the map.
+			const pose = takePlayerPose(mapUrl) ?? loadPlayerPose(mapUrl);
+			const poseUsable =
+				pose !== null &&
+				pose.x >= 0 &&
+				pose.x < mapPixelWidth &&
+				pose.y >= 0 &&
+				pose.y < mapPixelHeight;
+			const spawn = poseUsable
+				? pose
+				: sampleSpawnOrCenter(collectSpawnRegions(map), mapPixelWidth, mapPixelHeight);
+			const player = createBasicCharacter({
+				id: PLAYER_CHARACTER_ID,
+				sprite: resolveAvatarSprite(profileRef.current.avatarId),
+				paletteSwap: resolvePaletteSwap(profileRef.current.paletteId),
+				x: spawn.x,
+				y: spawn.y,
+				facing: poseUsable ? pose.facing : undefined,
+			});
+			world.addCharacter(player, new KeyboardInputProvider());
+			resolveCharacterCollision(player, world.grid, world.holes);
+			const invalidatePlayer = () => {
+				renderer.invalidate(player.id);
+				renderer.ensureLoaded([player]).catch(() => {});
+			};
+			gameRef.current = {world, clock, player, invalidatePlayer};
+			return {
+				follow: () => player,
+				initialFocus: {
+					x: player.x + player.spriteWidth / 2,
+					y: player.y + player.spriteHeight / 2,
+				},
+				dispose: () => {
+					// leaving the page: the online map starts its camera on this
+					// pose after a mode switch, storage restores it next session.
+					const {x, y, facing} = player;
+					handOffPlayerPose(mapUrl, {x, y, facing});
+					savePlayerPose(mapUrl, {x, y, facing});
+					gameRef.current = null;
+				},
+			};
+		},
+		[mapUrl, profileRef]
+	);
 
 	const step = useCallback((dtMs: number) => {
 		const game = gameRef.current;
@@ -126,6 +149,7 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 			tileY: number;
 			map: {tilewidth: number; tileheight: number};
 		}) => {
+			if (!allowTeleport || !clickTeleport) return;
 			const game = gameRef.current;
 			if (!game) return;
 			const tileCenterX = (tileX + 0.5) * map.tilewidth;
@@ -144,17 +168,32 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 			player.animTimeMs = 0;
 			resolveCharacterCollision(player, game.world.grid, game.world.holes);
 		},
-		[]
+		[allowTeleport, clickTeleport]
 	);
 
-	const {canvasProps, state, zoom, cursor} = useMapRenderer({
+	const {canvasProps, state, playerTile} = useMapRenderer({
 		mapUrl,
 		follow,
-		debug,
+		// the overlay is an admin diagnostic; a stored `true` stays inert for
+		// everyone else.
+		debug: debug && isAdmin,
 		init,
 		step,
 		onTileClick,
 	});
+
+	// a reload or tab close skips react cleanup (and with it the dispose
+	// above), so persist the position on pagehide too.
+	useEffect(() => {
+		const save = () => {
+			const player = gameRef.current?.player;
+			if (!player) return;
+			const {x, y, facing} = player;
+			savePlayerPose(mapUrl, {x, y, facing});
+		};
+		window.addEventListener("pagehide", save);
+		return () => window.removeEventListener("pagehide", save);
+	}, [mapUrl]);
 
 	// push the latest avatar/palette selection onto the player and force the
 	// renderer to refetch its image. gated on state.status so the first apply
@@ -162,77 +201,70 @@ function MapPage({mapUrl = DEFAULT_MAP_URL}: MapPageProps) {
 	useEffect(() => {
 		const game = gameRef.current;
 		if (!game || state.status !== "ok") return;
-		game.player.sprite = resolveAvatarSprite(avatarId);
-		game.player.paletteSwap = resolvePaletteSwap(paletteId);
+		game.player.sprite = resolveAvatarSprite(profile.avatarId);
+		game.player.paletteSwap = resolvePaletteSwap(profile.paletteId);
 		game.invalidatePlayer();
-	}, [avatarId, paletteId, state.status]);
-
-	const map = state.status === "ok" ? state.map : null;
-	const tileX = map && cursor ? Math.floor(cursor.x / map.tilewidth) : null;
-	const tileY = map && cursor ? Math.floor(cursor.y / map.tileheight) : null;
+	}, [profile.avatarId, profile.paletteId, state.status]);
 
 	return (
 		<div className="fixed inset-0 overflow-hidden bg-neutral-900 font-mono">
 			<canvas {...canvasProps} />
-			{state.status === "loading" && <LoadingScreen />}
-			<div className="absolute top-2 left-2 rounded bg-black/70 p-3 text-xs text-neutral-100 shadow-lg backdrop-blur">
-				{state.status === "error" && (
-					<pre className="whitespace-pre-wrap text-red-400">{state.message}</pre>
-				)}
-				<div className="flex flex-col gap-2">
-					<label className="flex items-center gap-2">
-						<input
-							type="checkbox"
-							checked={debug}
-							onChange={(e) => setDebug(e.target.checked)}
-						/>
-						debug overlay
-					</label>
-					<label className="flex items-center gap-2">
-						<input
-							type="checkbox"
-							checked={follow}
-							onChange={(e) => setFollow(e.target.checked)}
-						/>
-						follow player (wasd / arrows)
-					</label>
-					<label className="flex items-center gap-2">
-						<span className="text-neutral-400">tick rate</span>
-						<input
-							type="range"
-							min={MIN_TICK_RATE_HZ}
-							max={MAX_TICK_RATE_HZ}
-							step={1}
-							value={tickRate}
-							onChange={(e) => setTickRate(Number(e.target.value))}
-						/>
-						<span className="tabular-nums">{tickRate} Hz</span>
-					</label>
-					<SettingsDialog
-						open={pickerOpen}
-						onOpenChange={setPickerOpen}
-						avatarId={avatarId}
-						paletteId={paletteId}
-						onChange={(a, p) => {
-							setAvatarId(a);
-							setPaletteId(p);
-						}}
-						trigger={
-							<Button size="sm" variant="secondary">
-								Settings
-							</Button>
+			{state.status === "error" ? (
+				<div className="absolute inset-0 grid place-items-center p-4">
+					<pre className="max-w-full whitespace-pre-wrap text-xs text-red-400">
+						{state.message}
+					</pre>
+				</div>
+			) : state.status === "loading" ? (
+				<LoadingScreen />
+			) : (
+				<>
+					<ProfileDialog
+						open={profileOpen}
+						onOpenChange={setProfileOpen}
+						avatarId={profile.avatarId}
+						paletteId={profile.paletteId}
+						onChange={(a, p) =>
+							setProfile((prev) => ({...prev, avatarId: a, paletteId: p}))
 						}
 					/>
-				</div>
-				<div className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 tabular-nums">
-					<span className="text-neutral-400">zoom</span>
-					<span>{zoom.toFixed(2)}x</span>
-					<span className="text-neutral-400">pixel</span>
-					<span>{cursor ? `${Math.floor(cursor.x)}, ${Math.floor(cursor.y)}` : "—"}</span>
-					<span className="text-neutral-400">tile</span>
-					<span>{tileX !== null && tileY !== null ? `${tileX}, ${tileY}` : "—"}</span>
-				</div>
-			</div>
+					<HudBar>
+						{onModeChange && (
+							<ConnectionWidget
+								mode="offline"
+								onModeChange={onModeChange}
+								status="idle"
+								playerCount={0}
+							/>
+						)}
+						<PositionWidget playerTile={playerTile} />
+						<ProfileWidget onOpenProfile={() => setProfileOpen(true)} />
+						<SettingsWidget>
+							<SettingsCheckbox
+								checked={follow}
+								onChange={setFollow}
+								label="Camera follow"
+							/>
+							{allowTeleport && (
+								<SettingsCheckbox
+									checked={clickTeleport}
+									onChange={setClickTeleport}
+									label="Click to teleport"
+								/>
+							)}
+						</SettingsWidget>
+						{isAdmin && (
+							<AdminBadge>
+								<SettingsCheckbox
+									checked={debug}
+									onChange={setDebug}
+									label="Debug overlay"
+								/>
+							</AdminBadge>
+						)}
+					</HudBar>
+				</>
+			)}
 		</div>
 	);
 }

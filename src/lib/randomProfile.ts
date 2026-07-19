@@ -33,13 +33,16 @@ export function randomPaletteId(): string {
 // retries until the candidate clears validateName (mainly the length cap);
 // falls back to a plain "playerNNN" if no adjective fits.
 export function randomName(avatarName: string): string {
+	// fold multi-word avatar names (e.g. "Prince Richard") into the compact
+	// concatenated style, e.g. "BravePrinceRichard042".
+	const compactName = avatarName.replace(/[^A-Za-z0-9]/g, "");
 	for (let i = 0; i < NAME_ATTEMPTS; i++) {
 		const adjective = uniqueNamesGenerator({
 			dictionaries: [adjectives],
 			length: 1,
 			style: "lowerCase",
 		});
-		const candidate = `${capitalize(adjective)}${avatarName}${threeDigits()}`;
+		const candidate = `${capitalize(adjective)}${compactName}${threeDigits()}`;
 		if (candidate.length <= NAME_MAX_LENGTH && validateName(candidate).ok) return candidate;
 	}
 	return `Player${threeDigits()}`;
@@ -48,7 +51,7 @@ export function randomName(avatarName: string): string {
 export function randomProfile(): Profile {
 	const avatar: Avatar = pick(AVATARS);
 	return {
-		name: randomName(avatar.name),
+		name: randomName(avatar.shortName ?? avatar.name),
 		avatarId: avatar.id,
 		paletteId: randomPaletteId(),
 	};

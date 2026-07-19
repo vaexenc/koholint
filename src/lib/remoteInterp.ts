@@ -21,11 +21,10 @@ export type RemotePoseSample = {
 	at: number;
 };
 
-export type RemoteEntry = {
-	connId: ConnId;
-	idIndex: number;
-	profile: Profile;
-	color: string;
+// the minimum surface the interpolation functions need: a character to pose
+// and its sample buffer. remotes carry it inside RemoteEntry; the self
+// character uses a bare PoseMirror while another tab controls the avatar.
+export type PoseMirror = {
 	character: BasicCharacter;
 	// snapshot-interpolation buffer, ascending by `at` (ws delivery is ordered so
 	// samples never arrive out of sequence). we render REMOTE_INTERP_DELAY_MS in
@@ -34,13 +33,20 @@ export type RemoteEntry = {
 	samples: RemotePoseSample[];
 };
 
+export type RemoteEntry = PoseMirror & {
+	connId: ConnId;
+	idIndex: number;
+	profile: Profile;
+	color: string;
+};
+
 // positions the remote sprite at renderAt by lerping between the two buffered
 // samples that bracket it. consecutive segments share endpoints, so motion is
 // continuous regardless of uneven snapshot arrival spacing. clamps (never
 // extrapolates) at the buffer ends — before the oldest sample we hold the
 // oldest, past the newest we hold the newest — which falls out of the same lerp
 // for free once we pick lo === hi and t === 0 for those cases.
-export function applyRemoteInterp(remote: RemoteEntry, renderAt: number): void {
+export function applyRemoteInterp(remote: PoseMirror, renderAt: number): void {
 	const samples = remote.samples;
 	if (samples.length === 0) return;
 	const char = remote.character;
@@ -78,7 +84,7 @@ export function applyRemoteInterp(remote: RemoteEntry, renderAt: number): void {
 	char.walking = hi.walking;
 }
 
-export function recordRemotePose(remote: RemoteEntry, pose: SnapshotPose, at: number): void {
+export function recordRemotePose(remote: PoseMirror, pose: SnapshotPose, at: number): void {
 	const samples = remote.samples;
 	samples.push({
 		x: pose.x,

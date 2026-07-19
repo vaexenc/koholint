@@ -1,10 +1,8 @@
-import {
-	CLASSIC_CHARACTER_ANIMATIONS,
-	getAnimationFrame,
-	type ClassicCharacterAnimationName,
-} from "@/sprites/animations";
+import {CLASSIC_CHARACTER_ANIMATIONS, getAnimationFrame} from "@/sprites/animations";
 import {drawSpriteFrame, drawSpriteShadow} from "@/sprites/draw";
+import {loadSpriteImage} from "@/sprites/imageCache";
 import {buildColorMap, recolorImage} from "@/sprites/paletteSwap";
+import type {CharacterAnimationName} from "@/types";
 import {characterAabb, type BasicCharacter} from "./character";
 import {lerp} from "./math";
 import {isSwimTile} from "./terrain";
@@ -94,7 +92,8 @@ export class CharacterRenderer {
 	): void {
 		const entry = this.images.get(char.id);
 		if (!entry) return;
-		const animation = CLASSIC_CHARACTER_ANIMATIONS[pickAnimationName(char)];
+		const animations = char.sprite.animations ?? CLASSIC_CHARACTER_ANIMATIONS;
+		const animation = animations[pickAnimationName(char)];
 		const frame = getAnimationFrame(char.sprite.sheet, animation, char.animTimeMs);
 		if (!frame) return;
 		const x = renderX(char, alpha);
@@ -119,17 +118,45 @@ export class CharacterRenderer {
 				waterLineY - clipTop
 			);
 			ctx.clip();
-			drawSpriteFrame(ctx, entry.source, frame, 1, x, sunkY - bob);
+			drawSpriteFrame(
+				ctx,
+				entry.source,
+				frame,
+				1,
+				x,
+				sunkY - bob,
+				char.spriteWidth,
+				char.spriteHeight
+			);
 			ctx.restore();
 			return;
 		}
-		if (drawShadows) drawSpriteShadow(ctx, entry.source, frame, 1, x, y);
-		drawSpriteFrame(ctx, entry.source, frame, 1, x, y - jumpOffset);
+		if (drawShadows)
+			drawSpriteShadow(
+				ctx,
+				entry.source,
+				frame,
+				1,
+				x,
+				y,
+				char.spriteWidth,
+				char.spriteHeight
+			);
+		drawSpriteFrame(
+			ctx,
+			entry.source,
+			frame,
+			1,
+			x,
+			y - jumpOffset,
+			char.spriteWidth,
+			char.spriteHeight
+		);
 	}
 
 	private async loadOne(char: BasicCharacter, token: number): Promise<void> {
 		try {
-			const image = await loadImage(char.sprite.imageUrl);
+			const image = await loadSpriteImage(char.sprite.imageUrl);
 			// invalidate() or a newer ensureLoaded() may have superseded us
 			// while loadImage was pending; drop the stale result so it can't
 			// overwrite a fresher sprite.
@@ -146,7 +173,7 @@ export class CharacterRenderer {
 	}
 }
 
-function pickAnimationName(char: BasicCharacter): ClassicCharacterAnimationName {
+function pickAnimationName(char: BasicCharacter): CharacterAnimationName {
 	const prefix: "walk" | "stand" = char.walking ? "walk" : "stand";
 	return `${prefix}_${char.facing}`;
 }
@@ -178,14 +205,4 @@ function visualFeetY(char: BasicCharacter, alpha: number, swimming: boolean): nu
 	const y = renderY(char, alpha);
 	if (!swimming) return y + char.spriteHeight;
 	return y + SWIM_SINK_PX + char.spriteHeight * (1 - SWIM_CUT_FRACTION);
-}
-
-function loadImage(url: string): Promise<HTMLImageElement> {
-	return new Promise((resolve, reject) => {
-		const image = new Image();
-		image.decoding = "async";
-		image.onload = () => resolve(image);
-		image.onerror = () => reject(new Error(`failed to load sprite image: ${url}`));
-		image.src = url;
-	});
 }

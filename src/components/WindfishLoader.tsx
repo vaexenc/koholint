@@ -1,8 +1,7 @@
+import {WINDFISH_SPRITE} from "@/components/windfishSprite";
 import {useEffect, useRef} from "react";
 
-const CANVAS_SIZE = 512;
-const WINDFISH_URL = "/images/sprites/windfish.png";
-const WAVE_INTENSITY = 0.01;
+const WAVE_INTENSITY = 0.015;
 const WAVE_SPEED = 4.0;
 
 const VERTEX_SRC = `#version 300 es
@@ -24,7 +23,7 @@ out vec4 outColor;
 void main() {
 	vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
 	float col = floor(uv.x * 64.0);
-	float dy = sin(col * 0.5 + u_time * u_speed) * u_intensity;
+	float dy = sin(col * 0.1 + u_time * u_speed) * u_intensity;
 	vec2 warped = vec2(uv.x, uv.y + dy);
 	if (warped.y < 0.0 || warped.y > 1.0) {
 		outColor = vec4(0.0);
@@ -69,7 +68,15 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 	});
 }
 
-function AnimPage() {
+type WindfishLoaderProps = {
+	size?: number;
+	className?: string;
+};
+
+// animated windfish sprite driven by a column-warp shader, usable as a
+// loading indicator. the sprite is baked into the bundle so it renders
+// without a network request.
+export function WindfishLoader({size = 96, className}: WindfishLoaderProps) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 	useEffect(() => {
 		const canvas = canvasRef.current;
@@ -115,19 +122,19 @@ function AnimPage() {
 		let cancelled = false;
 		let rafId = 0;
 		let ready = false;
-		loadImage(WINDFISH_URL).then((img) => {
+		loadImage(WINDFISH_SPRITE).then((img) => {
 			if (cancelled) return;
 			gl.bindTexture(gl.TEXTURE_2D, tex);
 			gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
 			ready = true;
 		});
-		gl.viewport(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 		gl.enable(gl.BLEND);
 		gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 		const start = performance.now();
 		const tick = () => {
 			if (cancelled) return;
+			gl.viewport(0, 0, canvas.width, canvas.height);
 			gl.clearColor(0, 0, 0, 0);
 			gl.clear(gl.COLOR_BUFFER_BIT);
 			if (ready) {
@@ -156,15 +163,14 @@ function AnimPage() {
 		};
 	}, []);
 	return (
-		<div className="flex min-h-screen items-center justify-center bg-background p-8">
-			<canvas
-				ref={canvasRef}
-				width={CANVAS_SIZE}
-				height={CANVAS_SIZE}
-				style={{imageRendering: "pixelated"}}
-			/>
-		</div>
+		<canvas
+			ref={canvasRef}
+			width={size}
+			height={size}
+			className={className}
+			style={{imageRendering: "pixelated"}}
+			role="status"
+			aria-label="Loading"
+		/>
 	);
 }
-
-export default AnimPage;

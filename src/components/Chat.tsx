@@ -1,4 +1,4 @@
-import {AVATARS} from "@/components/avatar-picker/registry";
+import {resolveAvatarSprite} from "@/components/avatar-picker/registry";
 import {SpriteCanvas} from "@/components/SpriteCanvas";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
@@ -6,11 +6,12 @@ import {Popover, PopoverContent, PopoverTrigger} from "@/components/ui/popover";
 import {ScrollArea} from "@/components/ui/scroll-area";
 import {ToggleGroup, ToggleGroupItem} from "@/components/ui/toggle-group";
 import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/components/ui/tooltip";
+import {useMediaQuery} from "@/lib/useMediaQuery";
 import {cn} from "@/lib/utils";
 import type {ChatMessage} from "@/protocol";
-import {PALETTES} from "@/sprites/palettes";
+import {resolvePaletteSwap} from "@/sprites/palettes";
 import {ChevronDown, Send, Settings} from "lucide-react";
-import {useLayoutEffect, useRef, useState, type KeyboardEvent} from "react";
+import {useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref} from "react";
 
 export type {ChatMessage};
 
@@ -69,15 +70,6 @@ function fmtTime(ts: number, mode: TimestampMode) {
 	return `${h12}:${mm} ${d.getHours() < 12 ? "AM" : "PM"}`;
 }
 
-function resolveAvatarSprite(avatarId: string) {
-	return (AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0]).sprite;
-}
-
-function resolvePaletteSwap(paletteId: string | null) {
-	if (!paletteId) return undefined;
-	return PALETTES.find((p) => p.id === paletteId)?.palette;
-}
-
 // inline 16px avatar cell. wraps SpriteCanvas in a fixed-size flex item so
 // rows stay aligned regardless of the per-sprite padding the canvas adds.
 export function AvatarCell({avatarId, paletteId}: {avatarId: string; paletteId: string | null}) {
@@ -106,6 +98,9 @@ type ChatProps = {
 	// gates the input + send button; matches connection state in online mode
 	// (disabled during `connecting`/`resuming`).
 	canSend?: boolean;
+	// lets the page focus the compose input from outside (e.g. Enter while the
+	// map is focused jumps into chat).
+	inputRef?: Ref<HTMLInputElement>;
 	className?: string;
 };
 
@@ -116,6 +111,7 @@ function Chat(props: ChatProps) {
 		onSettingsChange,
 		onSend,
 		canSend = true,
+		inputRef,
 		className,
 	} = props;
 	const [input, setInput] = useState("");
@@ -159,6 +155,8 @@ function Chat(props: ChatProps) {
 		onSend?.(text);
 		setInput("");
 		setPinned(true);
+		// drop focus so keyboard control returns to the map (Enter re-focuses).
+		if (inputRef && typeof inputRef !== "function") inputRef.current?.blur();
 	};
 
 	const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -187,6 +185,7 @@ function Chat(props: ChatProps) {
 					onKeyDown={onKeyDown}
 					submit={submit}
 					canSend={canSend}
+					inputRef={inputRef}
 				/>
 			</div>
 		</TooltipProvider>
@@ -194,6 +193,16 @@ function Chat(props: ChatProps) {
 }
 
 export default Chat;
+
+// resolves which variant of a chat message's text to display: "on" reveals
+// the unfiltered original when the server shipped one. shared with the
+// in-world chat bubbles so both surfaces agree.
+export function chatDisplayText(
+	m: {readonly text: string; readonly rawText?: string},
+	obscenityMode: ObscenityMode
+): string {
+	return obscenityMode === "on" && m.rawText !== undefined ? m.rawText : m.text;
+}
 
 function renderRow(
 	m: ChatMessage,
@@ -235,7 +244,7 @@ function renderRow(
 			</div>
 		);
 	}
-	const text = obscenityMode === "on" && m.rawText !== undefined ? m.rawText : m.text;
+	const text = chatDisplayText(m, obscenityMode);
 	return (
 		<div key={m.id} className="flex items-start gap-1.5 leading-snug">
 			{avatarMode === "on" && <AvatarCell avatarId={m.avatarId} paletteId={m.paletteId} />}
@@ -261,6 +270,7 @@ type ComposeRowProps = {
 	onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
 	submit: () => void;
 	canSend: boolean;
+	inputRef?: Ref<HTMLInputElement>;
 };
 
 function ComposeRow({
@@ -273,29 +283,40 @@ function ComposeRow({
 	onKeyDown,
 	submit,
 	canSend,
+	inputRef,
 }: ComposeRowProps) {
+	// touch devices tap to focus; only keyboards have an Enter to prompt for.
+	const coarsePointer = useMediaQuery("(pointer: coarse)");
+	const placeholder = !canSend
+		? "connecting…"
+		: coarsePointer
+		? "say something…"
+		: "press enter to type";
 	return (
 		<div className="relative border-t border-white/10 p-2">
 			{!pinned && (
 				<button
 					type="button"
 					onClick={onScrollToBottom}
-					className="absolute -top-9 left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-black/80 text-neutral-100 shadow-md ring-1 ring-white/10 hover:bg-black"
+					className="absolute -top-9 left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-black/80 text-neutral-100 shadow-md ring-1 ring-white/10 pointer-coarse:-top-11 pointer-coarse:size-9 hover:bg-black"
 					aria-label="jump to bottom"
 				>
 					<ChevronDown className="h-4 w-4" />
 				</button>
 			)}
 			<div className="flex items-center gap-1">
-				<SettingsPopover settings={settings} onChange={updateSettings} />
+				<ChatSettingsPopover settings={settings} onChange={updateSettings} />
 				<Input
+					ref={inputRef}
 					value={input}
 					onChange={(e) => setInput(e.target.value)}
 					onKeyDown={onKeyDown}
 					maxLength={500}
 					disabled={!canSend}
-					placeholder={canSend ? "say something…" : "connecting…"}
-					className="h-7 text-xs"
+					placeholder={placeholder}
+					// text-base below md keeps iOS from zooming the page on focus
+					// (it zooms any focused input under 16px).
+					className="h-8 focus:placeholder:text-transparent md:h-7 md:text-xs"
 				/>
 				<Tooltip>
 					<TooltipTrigger asChild>
@@ -317,12 +338,12 @@ function ComposeRow({
 	);
 }
 
-type SettingsPopoverProps = {
+type ChatSettingsPopoverProps = {
 	settings: ChatSettings;
 	onChange: (patch: Partial<ChatSettings>) => void;
 };
 
-function SettingsPopover({settings, onChange}: SettingsPopoverProps) {
+function ChatSettingsPopover({settings, onChange}: ChatSettingsPopoverProps) {
 	const {timestampMode, avatarMode, presenceMode, obscenityMode} = settings;
 	return (
 		<Popover>

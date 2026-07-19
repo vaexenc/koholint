@@ -1,5 +1,6 @@
 import {ANIM_BYTE_MAX, ANIM_BYTE_SCALE_MS} from "@/protocol";
 import {WALK_CYCLE_MS} from "@/sprites/animations";
+import {sheetFootprint} from "@/sprites/sheet";
 import type {SpriteAsset, SpritePalette} from "@/types";
 import {
 	aabbOverlapsCliff,
@@ -139,7 +140,10 @@ export type BasicCharacterOptions = {
 };
 
 export function createBasicCharacter(opts: BasicCharacterOptions): BasicCharacter {
-	const base = opts.sprite.sheet[0];
+	// footprint, not raw frame size: art taller than the tile hangs above the
+	// anchor via a negative offsetY, and feet line, y-sort and water line all
+	// follow the extent below the anchor.
+	const footprint = sheetFootprint(opts.sprite.sheet);
 	return {
 		id: opts.id,
 		sprite: opts.sprite,
@@ -148,8 +152,8 @@ export function createBasicCharacter(opts: BasicCharacterOptions): BasicCharacte
 		y: opts.y,
 		prevX: opts.x,
 		prevY: opts.y,
-		spriteWidth: opts.spriteWidth ?? base?.width ?? 16,
-		spriteHeight: opts.spriteHeight ?? base?.height ?? 16,
+		spriteWidth: opts.spriteWidth ?? footprint.width,
+		spriteHeight: opts.spriteHeight ?? footprint.height,
 		collisionBox: opts.collisionBox ?? {...DEFAULT_COLLISION_BOX},
 		speed: opts.speed ?? DEFAULT_CHARACTER_SPEED,
 		facing: opts.facing ?? "down",
@@ -249,13 +253,17 @@ export function stepCharacter(
 // conveyor push: tiles tagged with pushX/pushY apply a continuous velocity
 // (px/sec) to any body resting on them. resolved against solids only — walls
 // halt the drift — and applied on top of the body's own motion so walking
-// against a current nets out. skipped while airborne, since a jump/teleport
-// returns before reaching here.
+// against a current nets out. uses the same corner-slide as manual movement so
+// a current carries the body past a clipped corner instead of snagging on it.
+// skipped while airborne, since a jump/teleport returns before reaching here.
 function applyPush(char: BasicCharacter, dtSec: number, grid: SolidGrid, push: PushGrid): void {
 	const before = characterAabb(char);
 	const v = samplePush(push, before);
 	if (v.x === 0 && v.y === 0) return;
-	const {position} = moveAabb(grid, before, v.x * dtSec, v.y * dtSec);
+	const {position} = moveAabb(grid, before, v.x * dtSec, v.y * dtSec, undefined, {
+		cornerSlackPx: DEFAULT_CORNER_SLIDE_PX,
+		maxCornerNudgePx: Math.hypot(v.x, v.y) * dtSec,
+	});
 	char.x += position.x - before.x;
 	char.y += position.y - before.y;
 }

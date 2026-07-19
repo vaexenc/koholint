@@ -6,9 +6,9 @@ import {
 	buildTeleporterGrid,
 	buildTerrainGrid,
 	CharacterRenderer,
+	createDebugOverlay,
 	DEBUG_OVERLAY_ALL,
 	DEFAULT_DEBUG_OVERLAY,
-	drawDebugOverlay,
 	lerp,
 	World,
 	type BasicCharacter,
@@ -17,7 +17,7 @@ import {buildAnimationTable} from "@/tiled/animation";
 import {browserMapLoaderEnv} from "@/tiled/browserEnv";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
 import {buildMapRenderCache, drawMapCache, type MapRenderCache} from "@/tiled/renderer";
-import {loadTilesets} from "@/tiled/tileset";
+import {loadTilesets, type LoadedTileset} from "@/tiled/tileset";
 import {
 	useEffect,
 	useRef,
@@ -40,6 +40,25 @@ const MAX_FRAME_DT = 0.1;
 // pointer travel under this many CSS pixels between down and up is treated
 // as a click (teleport) rather than a drag (pan).
 const CLICK_MAX_TRAVEL_PX = 4;
+
+// maps and their tilesets are immutable per URL, so keep them for the app's
+// lifetime: switching between the online and offline pages (which share a map)
+// then remounts without refetching — and without a loading screen. a failed
+// load is evicted so a retry refetches.
+const mapAssetCache = new Map<string, Promise<{map: TiledMap; tilesets: LoadedTileset[]}>>();
+
+function loadMapAssets(mapUrl: string) {
+	const cached = mapAssetCache.get(mapUrl);
+	if (cached) return cached;
+	const promise = (async () => {
+		const map = await loadTiledMap(mapUrl, browserMapLoaderEnv);
+		const tilesets = await loadTilesets(map, mapUrl);
+		return {map, tilesets};
+	})();
+	promise.catch(() => mapAssetCache.delete(mapUrl));
+	mapAssetCache.set(mapUrl, promise);
+	return promise;
+}
 
 // nearest world-space point (one axis) the camera can actually pin to the
 // screen anchor: derive the offset that would put `center` at `anchor`, run
@@ -90,7 +109,7 @@ export type MapLoadState =
 
 export type FollowTarget = Pick<
 	BasicCharacter,
-	"x" | "y" | "prevX" | "prevY" | "spriteWidth" | "spriteHeight"
+	"x" | "y" | "prevX" | "prevY" | "spriteWidth" | "spriteHeight" | "collisionBox"
 >;
 
 export type MapRendererInitContext = {
@@ -110,11 +129,13 @@ export type MapRendererSetup = {
 	// per-frame screen-space overlay, drawn on the main canvas (CSS pixels)
 	// after the offscreen blit so it stays crisp regardless of camera zoom.
 	// `worldToScreen` projects a world-space anchor into the same CSS-pixel
-	// space the overlay draws in. used for the movement hint.
+	// space the overlay draws in. `zoom` is the live camera scale, for overlays
+	// that size themselves relative to it. used for the movement hint.
 	drawScreenOverlay?: (
 		ctx: CanvasRenderingContext2D,
 		alpha: number,
-		worldToScreen: (x: number, y: number) => readonly [number, number]
+		worldToScreen: (x: number, y: number) => readonly [number, number],
+		zoom: number
 	) => void;
 	dispose?: () => void;
 };
@@ -162,6 +183,20 @@ type Drag = {
 	startOffsetY: number;
 };
 
+// two-finger pinch session: the scale/distance baseline it started from and
+// the world point under the fingers' midpoint, kept pinned there while the
+// gesture zooms and pans.
+type Pinch = {
+	startDist: number;
+	startScale: number;
+	worldX: number;
+	worldY: number;
+};
+
+function clampScale(scale: number): number {
+	return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+}
+
 export type UseMapRendererResult = {
 	canvasProps: {
 		ref: React.RefObject<HTMLCanvasElement | null>;
@@ -175,7 +210,7 @@ export type UseMapRendererResult = {
 	};
 	state: MapLoadState;
 	zoom: number;
-	cursor: {x: number; y: number} | null;
+	playerTile: {x: number; y: number} | null;
 	isDragging: boolean;
 };
 
@@ -199,6 +234,13 @@ export function useMapRenderer({
 		targetOffsetY: 0,
 	});
 	const dragRef = useRef<Drag | null>(null);
+	// every pointer currently down on the canvas, in press order (Map preserves
+	// insertion, so the first two entries are the pinch pair).
+	const pointersRef = useRef(new Map<number, {x: number; y: number}>());
+	const pinchRef = useRef<Pinch | null>(null);
+	// true from the moment a gesture gains a second finger until every finger
+	// lifts, so no phase of a pinch can end in a tile click.
+	const multiTouchRef = useRef(false);
 	// the world point under the cursor that an in-flight wheel zoom keeps pinned
 	// in place, plus the screen point it's pinned to. null when not zooming.
 	const zoomAnchorRef = useRef<{
@@ -211,9 +253,8 @@ export function useMapRenderer({
 	// on the player at every scale. null when not following.
 	const followFocusRef = useRef<{x: number; y: number} | null>(null);
 	const mapSizeRef = useRef<{width: number; height: number} | null>(null);
-	const mouseRef = useRef<{x: number; y: number} | null>(null);
 	const displayedZoomRef = useRef(INITIAL_SCALE);
-	const displayedCursorRef = useRef<{x: number; y: number} | null>(null);
+	const displayedPlayerTileRef = useRef<{x: number; y: number} | null>(null);
 
 	// live config + callback refs so the load effect (deps: [mapUrl]) keeps
 	// reading the latest values without re-running the whole map load.
@@ -252,7 +293,7 @@ export function useMapRenderer({
 
 	const [state, setState] = useState<MapLoadState>({status: "loading"});
 	const [zoom, setZoom] = useState(INITIAL_SCALE);
-	const [cursor, setCursor] = useState<{x: number; y: number} | null>(null);
+	const [playerTile, setPlayerTile] = useState<{x: number; y: number} | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
 
 	// x-axis strip of the window not covered by the side overlays — the region
@@ -270,8 +311,7 @@ export function useMapRenderer({
 		setState({status: "loading"});
 		(async () => {
 			try {
-				const map = await loadTiledMap(mapUrl, browserMapLoaderEnv);
-				const tilesets = await loadTilesets(map, mapUrl);
+				const {map, tilesets} = await loadMapAssets(mapUrl);
 				if (cancelled) return;
 				const canvas = canvasRef.current;
 				const ctx = canvas?.getContext("2d") ?? null;
@@ -381,8 +421,11 @@ export function useMapRenderer({
 				).objects;
 				let mapCache = buildCache(cacheDebugObjects);
 
+				const debugOverlay = createDebugOverlay(mapPixelWidth, mapPixelHeight);
+
 				const startTime = performance.now();
 				let lastFrameTime = 0;
+				let hadPlayerTarget = false;
 				const renderFrame = (now: number) => {
 					const dpr = window.devicePixelRatio || 1;
 					const cam = cameraRef.current;
@@ -407,7 +450,50 @@ export function useMapRenderer({
 					// step the simulation first so the camera spring chases this
 					// frame's freshly stepped follow target with zero extra latency.
 					const alpha = stepRef.current?.(dt * 1000) ?? 0;
-					const followTarget = followRef.current ? setup.follow?.() ?? null : null;
+					// the local player, resolved every frame whether follow is on or
+					// not: the camera only consumes it while following, but the HUD
+					// player-tile readout always does.
+					const playerTarget = setup.follow?.() ?? null;
+					const followTarget = followRef.current ? playerTarget : null;
+					// when the follow target appears (the welcome placing the self
+					// character) and init gave no viewpoint of its own, snap the
+					// camera onto it (following or not) — easing would sweep it
+					// across the map from a meaningless start. with an initialFocus
+					// (mode-switch continuity) the spring instead pans from there.
+					if (playerTarget && !hadPlayerTarget && !setup.initialFocus) {
+						const centerX = playerTarget.x + playerTarget.spriteWidth / 2;
+						const centerY = playerTarget.y + playerTarget.spriteHeight / 2;
+						cam.offsetX = clampCameraOffset(
+							window.innerWidth / 2 - centerX * cam.scale,
+							cam.scale,
+							mapPixelWidth,
+							vpX.start,
+							vpX.end
+						);
+						cam.offsetY = clampCameraOffset(
+							window.innerHeight / 2 - centerY * cam.scale,
+							cam.scale,
+							mapPixelHeight,
+							0,
+							window.innerHeight
+						);
+						cam.targetOffsetX = clampCameraOffset(
+							window.innerWidth / 2 - centerX * cam.targetScale,
+							cam.targetScale,
+							mapPixelWidth,
+							vpX.start,
+							vpX.end
+						);
+						cam.targetOffsetY = clampCameraOffset(
+							window.innerHeight / 2 - centerY * cam.targetScale,
+							cam.targetScale,
+							mapPixelHeight,
+							0,
+							window.innerHeight
+						);
+						followFocusRef.current = null;
+					}
+					hadPlayerTarget = playerTarget !== null;
 					// the world-space point the follow camera wants centered this
 					// frame; the offset is derived from it below once the live scale
 					// is known. null when not following.
@@ -554,7 +640,7 @@ export function useMapRenderer({
 						mapPixelHeight
 					);
 					renderer.drawAll(offCtx, world, true, alpha);
-					drawDebugOverlay(offCtx, world, overlay);
+					debugOverlay.draw(offCtx, world, overlay);
 					ctx.setTransform(1, 0, 0, 1, 0, 0);
 					ctx.imageSmoothingEnabled = false;
 					ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -572,10 +658,12 @@ export function useMapRenderer({
 						// crisp without the camera's nearest-neighbor upscale.
 						ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 						ctx.imageSmoothingEnabled = true;
-						setup.drawScreenOverlay(ctx, alpha, (x, y) => [
-							x * cam.scale + cam.offsetX,
-							y * cam.scale + cam.offsetY,
-						]);
+						setup.drawScreenOverlay(
+							ctx,
+							alpha,
+							(x, y) => [x * cam.scale + cam.offsetX, y * cam.scale + cam.offsetY],
+							cam.scale
+						);
 					}
 
 					// push the live camera into the overlay state, but only when
@@ -585,19 +673,26 @@ export function useMapRenderer({
 						displayedZoomRef.current = cam.scale;
 						setZoom(cam.scale);
 					}
-					const mouse = mouseRef.current;
-					if (mouse) {
-						const wx = (mouse.x - cam.offsetX) / cam.scale;
-						const wy = (mouse.y - cam.offsetY) / cam.scale;
-						const prev = displayedCursorRef.current;
-						if (
-							!prev ||
-							Math.floor(prev.x) !== Math.floor(wx) ||
-							Math.floor(prev.y) !== Math.floor(wy)
-						) {
-							displayedCursorRef.current = {x: wx, y: wy};
-							setCursor({x: wx, y: wy});
+					// surface the player's occupied tile (collision-box center) into
+					// overlay state, but only when the rounded tile changes so the HUD
+					// doesn't re-render every frame. inverts the teleport placement in
+					// onTileClick, so click-to-teleport round-trips to the shown tile.
+					if (playerTarget) {
+						const box = playerTarget.collisionBox;
+						const tileX = Math.floor(
+							(playerTarget.x + box.x + box.width / 2) / map.tilewidth
+						);
+						const tileY = Math.floor(
+							(playerTarget.y + box.y + box.height / 2) / map.tileheight
+						);
+						const prev = displayedPlayerTileRef.current;
+						if (!prev || prev.x !== tileX || prev.y !== tileY) {
+							displayedPlayerTileRef.current = {x: tileX, y: tileY};
+							setPlayerTile({x: tileX, y: tileY});
 						}
+					} else if (displayedPlayerTileRef.current) {
+						displayedPlayerTileRef.current = null;
+						setPlayerTile(null);
 					}
 
 					frameHandle = requestAnimationFrame(renderFrame);
@@ -625,15 +720,43 @@ export function useMapRenderer({
 		};
 	}, [mapUrl]);
 
+	// baseline for a (re)starting pinch: the current distance between the two
+	// tracked fingers and the world point under their midpoint. re-derived
+	// whenever the finger set changes so the map never jumps mid-gesture.
+	const capturePinch = (): Pinch | null => {
+		const [a, b] = [...pointersRef.current.values()];
+		if (!a || !b) return null;
+		const cam = cameraRef.current;
+		return {
+			startDist: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1),
+			startScale: cam.scale,
+			worldX: ((a.x + b.x) / 2 - cam.offsetX) / cam.scale,
+			worldY: ((a.y + b.y) / 2 - cam.offsetY) / cam.scale,
+		};
+	};
+
 	const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
 		const cam = cameraRef.current;
 		// commit any in-flight spring animation to the current pose, so the
-		// drag starts from where the user actually sees the map right now.
+		// gesture starts from where the user actually sees the map right now.
 		cam.targetScale = cam.scale;
 		cam.targetOffsetX = cam.offsetX;
 		cam.targetOffsetY = cam.offsetY;
-		// end any in-flight zoom so its offset lock doesn't fight the drag.
+		// end any in-flight zoom so its offset lock doesn't fight the gesture.
 		zoomAnchorRef.current = null;
+		e.currentTarget.setPointerCapture(e.pointerId);
+		const pointers = pointersRef.current;
+		pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+		if (pointers.size === 2) {
+			// a second finger turns the drag into a pinch (zoom + pan around
+			// the midpoint) for the rest of the gesture.
+			multiTouchRef.current = true;
+			dragRef.current = null;
+			setIsDragging(false);
+			pinchRef.current = capturePinch();
+			return;
+		}
+		if (pointers.size > 2) return;
 		dragRef.current = {
 			pointerId: e.pointerId,
 			button: e.button,
@@ -642,12 +765,43 @@ export function useMapRenderer({
 			startOffsetX: cam.offsetX,
 			startOffsetY: cam.offsetY,
 		};
-		e.currentTarget.setPointerCapture(e.pointerId);
 		setIsDragging(true);
 	};
 
 	const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
-		mouseRef.current = {x: e.clientX, y: e.clientY};
+		const tracked = pointersRef.current.get(e.pointerId);
+		if (tracked) {
+			tracked.x = e.clientX;
+			tracked.y = e.clientY;
+		}
+		const pinch = pinchRef.current;
+		if (pinch) {
+			const [a, b] = [...pointersRef.current.values()];
+			if (!a || !b) return;
+			const cam = cameraRef.current;
+			const dist = Math.hypot(a.x - b.x, a.y - b.y);
+			const scale = clampScale((pinch.startScale * dist) / pinch.startDist);
+			// direct manipulation like the drag: write current and target
+			// together so the map tracks the fingers 1:1 with no smoothing lag.
+			cam.scale = scale;
+			cam.targetScale = scale;
+			// following keeps the camera centered on the player, so the pinch
+			// only zooms; the follow logic places the offset.
+			if (followRef.current) return;
+			const size = mapSizeRef.current;
+			let nextX = (a.x + b.x) / 2 - pinch.worldX * scale;
+			let nextY = (a.y + b.y) / 2 - pinch.worldY * scale;
+			if (size) {
+				const vpX = viewportXStrip();
+				nextX = clampCameraOffset(nextX, scale, size.width, vpX.start, vpX.end);
+				nextY = clampCameraOffset(nextY, scale, size.height, 0, window.innerHeight);
+			}
+			cam.offsetX = nextX;
+			cam.offsetY = nextY;
+			cam.targetOffsetX = nextX;
+			cam.targetOffsetY = nextY;
+			return;
+		}
 		const drag = dragRef.current;
 		if (drag && drag.pointerId === e.pointerId) {
 			const cam = cameraRef.current;
@@ -669,6 +823,30 @@ export function useMapRenderer({
 	};
 
 	const onPointerUp = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+		const pointers = pointersRef.current;
+		const wasMultiTouch = multiTouchRef.current;
+		pointers.delete(e.pointerId);
+		if (pointers.size === 0) multiTouchRef.current = false;
+		if (pinchRef.current) {
+			// a finger changed: re-baseline with the remaining pair, or fall
+			// back to a plain pan under the last finger.
+			pinchRef.current = capturePinch();
+			if (pinchRef.current) return;
+			const [rest] = [...pointers.entries()];
+			if (rest) {
+				const cam = cameraRef.current;
+				dragRef.current = {
+					pointerId: rest[0],
+					button: 0,
+					startX: rest[1].x,
+					startY: rest[1].y,
+					startOffsetX: cam.offsetX,
+					startOffsetY: cam.offsetY,
+				};
+				setIsDragging(true);
+			}
+			return;
+		}
 		const drag = dragRef.current;
 		if (drag?.pointerId !== e.pointerId) return;
 		const travel = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
@@ -676,7 +854,9 @@ export function useMapRenderer({
 		dragRef.current = null;
 		e.currentTarget.releasePointerCapture(e.pointerId);
 		setIsDragging(false);
-		if (!wasLeft || travel > CLICK_MAX_TRAVEL_PX) return;
+		// no phase of a multi-touch gesture is a click, even the trailing
+		// single-finger pan after a pinch.
+		if (wasMultiTouch || !wasLeft || travel > CLICK_MAX_TRAVEL_PX) return;
 		const map = mapRef.current;
 		if (!map) return;
 		const cam = cameraRef.current;
@@ -689,10 +869,9 @@ export function useMapRenderer({
 	};
 
 	const onWheel = (e: ReactWheelEvent<HTMLCanvasElement>) => {
-		mouseRef.current = {x: e.clientX, y: e.clientY};
 		const cam = cameraRef.current;
 		const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-		const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, cam.targetScale * factor));
+		const newScale = clampScale(cam.targetScale * factor);
 		if (newScale === cam.targetScale) return;
 		cam.targetScale = newScale;
 		// following keeps the camera centered on the player, so just change the
@@ -741,7 +920,7 @@ export function useMapRenderer({
 		},
 		state,
 		zoom,
-		cursor,
+		playerTile,
 		isDragging,
 	};
 }

@@ -1,4 +1,4 @@
-import {getAnimationFrame, type SpriteAnimation} from "@/sprites/animations";
+import {getAnimationFrame} from "@/sprites/animations";
 import {
 	computeSheetPadding,
 	drawSpriteFrame,
@@ -6,24 +6,44 @@ import {
 	SPRITE_SHADOW_OFFSET_X_PX,
 	SPRITE_SHADOW_OFFSET_Y_PX,
 } from "@/sprites/draw";
+import {loadSpriteImage} from "@/sprites/imageCache";
 import {buildColorMap, recolorImage} from "@/sprites/paletteSwap";
-import type {SpriteAsset, SpritePalette} from "@/types";
+import {sheetFootprint} from "@/sprites/sheet";
+import type {SpriteAnimation, SpriteAsset, SpritePalette} from "@/types";
 import {useEffect, useMemo, useRef, useState} from "react";
 
 function useSpriteImage(url: string): HTMLImageElement | null {
 	const [img, setImg] = useState<HTMLImageElement | null>(null);
 	useEffect(() => {
 		let cancelled = false;
-		const image = new Image();
-		image.onload = () => {
-			if (!cancelled) setImg(image);
-		};
-		image.src = url;
+		loadSpriteImage(url)
+			.then((image) => {
+				if (!cancelled) setImg(image);
+			})
+			.catch(() => {});
 		return () => {
 			cancelled = true;
 		};
 	}, [url]);
 	return img;
+}
+
+// the canvas box a sprite renders into: logical footprint plus per-side
+// padding and shadow margins. exported so surfaces can reserve a fixed slot
+// (e.g. the picker preview) that fits any sprite without layout shift.
+export function spriteCanvasSize(
+	sprite: SpriteAsset,
+	scale: number,
+	shadow = false
+): {width: number; height: number} {
+	const padding = computeSheetPadding(sprite.sheet);
+	const footprint = sheetFootprint(sprite.sheet);
+	const shadowMarginX = shadow ? SPRITE_SHADOW_OFFSET_X_PX * scale : 0;
+	const shadowMarginY = shadow ? SPRITE_SHADOW_OFFSET_Y_PX * scale : 0;
+	return {
+		width: (footprint.width + padding.x * 2) * scale + shadowMarginX * 2,
+		height: (footprint.height + padding.top + padding.bottom) * scale + shadowMarginY,
+	};
 }
 
 type SpriteCanvasProps = {
@@ -51,6 +71,7 @@ export function SpriteCanvas({
 	const sheet = sprite.sheet;
 	const baseSprite = sheet[0];
 	const padding = useMemo(() => computeSheetPadding(sheet), [sheet]);
+	const footprint = useMemo(() => sheetFootprint(sheet), [sheet]);
 	const colorMap = useMemo(
 		() => (sprite.palette && paletteSwap ? buildColorMap(sprite.palette, paletteSwap) : null),
 		[sprite.palette, paletteSwap]
@@ -61,21 +82,39 @@ export function SpriteCanvas({
 	);
 	const source: CanvasImageSource | null = recolored ?? image;
 	const shadowMarginX = shadow ? SPRITE_SHADOW_OFFSET_X_PX * scale : 0;
-	const shadowMarginY = shadow ? SPRITE_SHADOW_OFFSET_Y_PX * scale : 0;
 	useEffect(() => {
 		const canvas = canvasRef.current;
 		if (!canvas || !source || !baseSprite) return;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 		const originX = padding.x * scale + shadowMarginX;
-		const originY = padding.y * scale;
+		const originY = padding.top * scale;
 		ctx.imageSmoothingEnabled = false;
 		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 		if (!animation) {
 			const frame = {sprite: baseSprite, mirrorX: false, mirrorY: false};
-			if (shadow) drawSpriteShadow(ctx, source, frame, scale, originX, originY);
-			drawSpriteFrame(ctx, source, frame, scale, originX, originY);
+			if (shadow)
+				drawSpriteShadow(
+					ctx,
+					source,
+					frame,
+					scale,
+					originX,
+					originY,
+					footprint.width,
+					footprint.height
+				);
+			drawSpriteFrame(
+				ctx,
+				source,
+				frame,
+				scale,
+				originX,
+				originY,
+				baseSprite.width,
+				baseSprite.height
+			);
 			return;
 		}
 		// a cancellation flag (rather than cancelAnimationFrame) means an
@@ -97,8 +136,27 @@ export function SpriteCanvas({
 			ctx.setTransform(1, 0, 0, 1, 0, 0);
 			ctx.clearRect(0, 0, canvas.width, canvas.height);
 			if (frame) {
-				if (shadow) drawSpriteShadow(ctx, source, frame, scale, originX, originY);
-				drawSpriteFrame(ctx, source, frame, scale, originX, originY);
+				if (shadow)
+					drawSpriteShadow(
+						ctx,
+						source,
+						frame,
+						scale,
+						originX,
+						originY,
+						footprint.width,
+						footprint.height
+					);
+				drawSpriteFrame(
+					ctx,
+					source,
+					frame,
+					scale,
+					originX,
+					originY,
+					footprint.width,
+					footprint.height
+				);
 			}
 			requestAnimationFrame(tick);
 		};
@@ -106,17 +164,20 @@ export function SpriteCanvas({
 		return () => {
 			cancelled = true;
 		};
-	}, [source, baseSprite, scale, animation, sheet, padding, shadow, shadowMarginX]);
+	}, [source, baseSprite, scale, animation, sheet, padding, footprint, shadow, shadowMarginX]);
 	if (!baseSprite) return null;
+	// canvas wraps the logical footprint plus per-side padding, so the feet
+	// line sits a fixed distance from the canvas bottom for every sheet.
 	// shadow extends past the sprite's right/bottom edges; pad both sides on X
 	// (kept symmetric to avoid layout drift between shadowed and unshadowed
 	// instances) and only the bottom on Y. drawing origin is shifted right by
 	// the left margin so the sprite stays centred within the extended canvas.
+	const size = spriteCanvasSize(sprite, scale, shadow);
 	return (
 		<canvas
 			ref={canvasRef}
-			width={(baseSprite.width + padding.x * 2) * scale + shadowMarginX * 2}
-			height={(baseSprite.height + padding.y * 2) * scale + shadowMarginY}
+			width={size.width}
+			height={size.height}
 			className={className}
 			style={{imageRendering: "pixelated"}}
 		/>

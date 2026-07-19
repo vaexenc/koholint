@@ -55,130 +55,190 @@ const STYLE = {
 
 const LINE_WIDTH = 1;
 
-// draws non-object debug layers on top of the tiled scene. "objects" is
-// handled inside drawObjectLayer because it needs per-object classification
-// data that isn't worth recomputing here. resets the transform to identity
-// because the sprite renderer leaves the ctx in per-character local space.
-export function drawDebugOverlay(
+// keys of the layers baked into the cached bitmap (everything except hitboxes,
+// which move with the characters and are redrawn live every frame).
+type StaticKey = Exclude<keyof DebugOverlayOptions, "objects" | "hitboxes">;
+const STATIC_KEYS: readonly StaticKey[] = [
+	"solids",
+	"holes",
+	"swim",
+	"stairs",
+	"cliffs",
+	"push",
+	"teleporters",
+];
+
+// caches the static debug layers into an offscreen bitmap so a frame only pays
+// for a single drawImage plus the live hitboxes, instead of re-stroking every
+// grid cell. the bitmap is rebuilt only when the set of enabled static layers
+// changes, which in practice happens just when the overlay is toggled.
+export type DebugOverlay = {
+	draw(ctx: CanvasRenderingContext2D, world: World, options: DebugOverlayOptions): void;
+};
+
+export function createDebugOverlay(width: number, height: number): DebugOverlay {
+	const canvas = document.createElement("canvas");
+	canvas.width = width;
+	canvas.height = height;
+	const cacheCtx = canvas.getContext("2d");
+	if (!cacheCtx) throw new Error("failed to create debug overlay 2d context");
+
+	let cachedSignature: string | null = null;
+	let hasStaticLayers = false;
+
+	const rebuild = (world: World, options: DebugOverlayOptions): void => {
+		cacheCtx.clearRect(0, 0, width, height);
+		cacheCtx.lineWidth = LINE_WIDTH;
+		hasStaticLayers = drawStaticLayers(cacheCtx, world, options);
+	};
+
+	return {
+		draw(ctx, world, options) {
+			const signature = STATIC_KEYS.map((key) => (options[key] ? "1" : "0")).join("");
+			if (signature !== cachedSignature) {
+				cachedSignature = signature;
+				rebuild(world, options);
+			}
+			ctx.save();
+			ctx.setTransform(1, 0, 0, 1, 0, 0);
+			if (hasStaticLayers) ctx.drawImage(canvas, 0, 0);
+			if (options.hitboxes) {
+				ctx.lineWidth = LINE_WIDTH;
+				drawHitboxes(ctx, world, STYLE.hitboxes);
+			}
+			ctx.restore();
+		},
+	};
+}
+
+// returns whether any static layer actually drew, so the frame can skip the
+// blit when the overlay is off.
+function drawStaticLayers(
 	ctx: CanvasRenderingContext2D,
 	world: World,
 	options: DebugOverlayOptions
-): void {
-	ctx.save();
-	ctx.setTransform(1, 0, 0, 1, 0, 0);
-	ctx.lineWidth = LINE_WIDTH;
-	if (options.solids) drawCellGrid(ctx, world.grid, STYLE.solids);
-	if (options.holes && world.holes) drawCellGrid(ctx, world.holes, STYLE.holes);
-	if (options.swim && world.terrain) drawSwim(ctx, world.terrain, STYLE.swim);
-	if (options.stairs && world.terrain) drawStairs(ctx, world.terrain, STYLE.stairs);
-	if (options.cliffs && world.cliffs) drawCliffs(ctx, world.cliffs, STYLE.cliffs);
-	if (options.push && world.push) drawPush(ctx, world.push, STYLE.push);
+): boolean {
+	let drew = false;
+	if (options.solids) drew = drawCellGrid(ctx, world.grid, STYLE.solids) || drew;
+	if (options.holes && world.holes) drew = drawCellGrid(ctx, world.holes, STYLE.holes) || drew;
+	if (options.swim && world.terrain) drew = drawSwim(ctx, world.terrain, STYLE.swim) || drew;
+	if (options.stairs && world.terrain)
+		drew = drawStairs(ctx, world.terrain, STYLE.stairs) || drew;
+	if (options.cliffs && world.cliffs) drew = drawCliffs(ctx, world.cliffs, STYLE.cliffs) || drew;
+	if (options.push && world.push) drew = drawPush(ctx, world.push, STYLE.push) || drew;
 	if (options.teleporters && world.teleporters)
-		drawTeleporters(ctx, world.teleporters, STYLE.teleporters);
-	if (options.hitboxes) drawHitboxes(ctx, world, STYLE.hitboxes);
-	ctx.restore();
+		drew = drawTeleporters(ctx, world.teleporters, STYLE.teleporters) || drew;
+	return drew;
 }
 
 function drawHitboxes(ctx: CanvasRenderingContext2D, world: World, style: Style): void {
-	applyStyle(ctx, style);
+	const path = new Path2D();
 	for (const char of world.characters.values()) {
 		const b = char.collisionBox;
-		const x = char.x + b.x;
-		const y = char.y + b.y;
-		ctx.fillRect(x, y, b.width, b.height);
-		ctx.strokeRect(x, y, b.width, b.height);
+		path.rect(char.x + b.x, char.y + b.y, b.width, b.height);
 	}
+	fillStroke(ctx, path, style);
 }
 
-function drawCellGrid(ctx: CanvasRenderingContext2D, grid: SolidGrid, style: Style): void {
-	applyStyle(ctx, style);
+function drawCellGrid(ctx: CanvasRenderingContext2D, grid: SolidGrid, style: Style): boolean {
+	const path = new Path2D();
 	for (let row = 0; row < grid.height; row++) {
 		for (let col = 0; col < grid.width; col++) {
 			if (grid.cells[row * grid.width + col] === 0) continue;
-			drawCell(ctx, col, row, grid.tileWidth, grid.tileHeight);
+			path.rect(col * grid.tileWidth, row * grid.tileHeight, grid.tileWidth, grid.tileHeight);
 		}
 	}
+	return fillStroke(ctx, path, style);
 }
 
-function drawSwim(ctx: CanvasRenderingContext2D, terrain: TerrainGrid, style: Style): void {
-	applyStyle(ctx, style);
+function drawSwim(ctx: CanvasRenderingContext2D, terrain: TerrainGrid, style: Style): boolean {
+	const path = new Path2D();
 	forEachSwimCell(terrain, (col, row) => {
-		drawCell(ctx, col, row, terrain.tileWidth, terrain.tileHeight);
+		path.rect(
+			col * terrain.tileWidth,
+			row * terrain.tileHeight,
+			terrain.tileWidth,
+			terrain.tileHeight
+		);
 	});
+	return fillStroke(ctx, path, style);
 }
 
-function drawStairs(ctx: CanvasRenderingContext2D, terrain: TerrainGrid, style: Style): void {
-	applyStyle(ctx, style);
+function drawStairs(ctx: CanvasRenderingContext2D, terrain: TerrainGrid, style: Style): boolean {
+	const path = new Path2D();
 	forEachStairsCell(terrain, (col, row) => {
-		drawCell(ctx, col, row, terrain.tileWidth, terrain.tileHeight);
+		path.rect(
+			col * terrain.tileWidth,
+			row * terrain.tileHeight,
+			terrain.tileWidth,
+			terrain.tileHeight
+		);
 	});
+	return fillStroke(ctx, path, style);
 }
 
-function drawCliffs(ctx: CanvasRenderingContext2D, cliffs: CliffGrid, style: Style): void {
-	applyStyle(ctx, style);
-	for (const r of cliffs.regions) {
-		ctx.fillRect(r.x, r.y, r.width, r.height);
-		ctx.strokeRect(r.x, r.y, r.width, r.height);
-	}
+function drawCliffs(ctx: CanvasRenderingContext2D, cliffs: CliffGrid, style: Style): boolean {
+	const path = new Path2D();
+	for (const r of cliffs.regions) path.rect(r.x, r.y, r.width, r.height);
+	return fillStroke(ctx, path, style);
 }
 
 // each push cell is tinted and gets a line from its center toward the push
 // direction so the conveyor flow is readable at a glance.
-function drawPush(ctx: CanvasRenderingContext2D, push: PushGrid, style: Style): void {
-	applyStyle(ctx, style);
+function drawPush(ctx: CanvasRenderingContext2D, push: PushGrid, style: Style): boolean {
+	const cells = new Path2D();
+	const arrows = new Path2D();
 	forEachPushCell(push, (col, row, v) => {
 		const x = col * push.tileWidth;
 		const y = row * push.tileHeight;
-		ctx.fillRect(x, y, push.tileWidth, push.tileHeight);
-		ctx.strokeRect(x, y, push.tileWidth, push.tileHeight);
+		cells.rect(x, y, push.tileWidth, push.tileHeight);
 		const cx = x + push.tileWidth / 2;
 		const cy = y + push.tileHeight / 2;
 		const len = Math.hypot(v.x, v.y) || 1;
 		const reach = Math.min(push.tileWidth, push.tileHeight) / 2 - 2;
-		ctx.beginPath();
-		ctx.moveTo(cx, cy);
-		ctx.lineTo(cx + (v.x / len) * reach, cy + (v.y / len) * reach);
-		ctx.stroke();
+		arrows.moveTo(cx, cy);
+		arrows.lineTo(cx + (v.x / len) * reach, cy + (v.y / len) * reach);
 	});
+	applyStyle(ctx, style);
+	ctx.fill(cells);
+	ctx.stroke(cells);
+	ctx.stroke(arrows);
+	return true;
 }
 
 function drawTeleporters(
 	ctx: CanvasRenderingContext2D,
 	teleporters: TeleporterGrid,
 	style: Style
-): void {
-	applyStyle(ctx, style);
+): boolean {
+	const boxes = new Path2D();
+	const links = new Path2D();
 	for (const t of teleporters.all) {
 		const {box} = t;
-		ctx.fillRect(box.x, box.y, box.width, box.height);
-		ctx.strokeRect(box.x, box.y, box.width, box.height);
+		boxes.rect(box.x, box.y, box.width, box.height);
 		const target = teleporters.byId.get(t.targetId);
 		if (!target) continue;
-		const sx = box.x + box.width / 2;
-		const sy = box.y + box.height / 2;
-		const tx = target.box.x + target.box.width / 2 + t.destOffsetX;
-		const ty = target.box.y + target.box.height / 2 + t.destOffsetY;
-		ctx.beginPath();
-		ctx.moveTo(sx, sy);
-		ctx.lineTo(tx, ty);
-		ctx.stroke();
+		links.moveTo(box.x + box.width / 2, box.y + box.height / 2);
+		links.lineTo(
+			target.box.x + target.box.width / 2 + t.destOffsetX,
+			target.box.y + target.box.height / 2 + t.destOffsetY
+		);
 	}
+	applyStyle(ctx, style);
+	ctx.fill(boxes);
+	ctx.stroke(boxes);
+	ctx.stroke(links);
+	return true;
+}
+
+function fillStroke(ctx: CanvasRenderingContext2D, path: Path2D, style: Style): boolean {
+	applyStyle(ctx, style);
+	ctx.fill(path);
+	ctx.stroke(path);
+	return true;
 }
 
 function applyStyle(ctx: CanvasRenderingContext2D, style: Style): void {
 	ctx.strokeStyle = style.stroke;
 	ctx.fillStyle = style.fill;
-}
-
-function drawCell(
-	ctx: CanvasRenderingContext2D,
-	col: number,
-	row: number,
-	tileWidth: number,
-	tileHeight: number
-): void {
-	const x = col * tileWidth;
-	const y = row * tileHeight;
-	ctx.fillRect(x, y, tileWidth, tileHeight);
-	ctx.strokeRect(x, y, tileWidth, tileHeight);
 }
