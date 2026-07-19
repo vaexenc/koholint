@@ -3,6 +3,7 @@ import {SpriteCanvas, spriteCanvasSize} from "@/components/SpriteCanvas";
 import {Input} from "@/components/ui/input";
 import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/components/ui/tooltip";
 import {cn} from "@/lib/utils";
+import {NAME_MAX_LENGTH} from "@/lib/validateName";
 import {CLASSIC_CHARACTER_ANIMATIONS} from "@/sprites/animations";
 import {PALETTES, type NamedPalette} from "@/sprites/palettes";
 import type {CharacterAnimationName} from "@/types";
@@ -179,7 +180,7 @@ function NameField({value, onChange, error}: NameFieldProps) {
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				placeholder="your name on koholint"
-				maxLength={40}
+				maxLength={NAME_MAX_LENGTH}
 				aria-invalid={error ? true : undefined}
 			/>
 			{error ? <span className="text-xs text-destructive">{error}</span> : null}
