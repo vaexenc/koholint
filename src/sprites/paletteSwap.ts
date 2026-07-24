@@ -1,14 +1,10 @@
-import type {HexColor, SpritePalette, SpriteSheetColorMap} from "@/types";
+import {hexToRgb} from "@/sprites/hexColor";
+import type {SpritePalette, SpriteSheetColorMap} from "@/types";
 
 const PALETTE_KEYS = ["primary", "skin"] as const;
 const MAX_MAP_ENTRIES = 16;
 
-function hexToRgb(hex: HexColor): [number, number, number] {
-	const v = hex.slice(1);
-	return [parseInt(v.slice(0, 2), 16), parseInt(v.slice(2, 4), 16), parseInt(v.slice(4, 6), 16)];
-}
-
-export function buildColorMap(source: SpritePalette, target: SpritePalette): SpriteSheetColorMap {
+function buildColorMap(source: SpritePalette, target: SpritePalette): SpriteSheetColorMap {
 	const map: SpriteSheetColorMap = new Map();
 	for (const key of PALETTE_KEYS) {
 		const src = source[key];
@@ -131,7 +127,7 @@ function initGl(): GlState | null {
 // returns a fresh 2d canvas snapshot so callers can hold it independently of
 // the shared webgl backbuffer. falls back to the original image on a 2d canvas
 // when webgl2 is unavailable.
-export function recolorImage(image: HTMLImageElement, map: SpriteSheetColorMap): HTMLCanvasElement {
+function recolorImage(image: HTMLImageElement, map: SpriteSheetColorMap): HTMLCanvasElement {
 	const w = image.naturalWidth;
 	const h = image.naturalHeight;
 	const out = document.createElement("canvas");
@@ -173,4 +169,33 @@ export function recolorImage(image: HTMLImageElement, map: SpriteSheetColorMap):
 	gl.drawArrays(gl.TRIANGLES, 0, 6);
 	out2d.drawImage(canvas, 0, 0);
 	return out;
+}
+
+// caches recolored sprites by (image, target palette) so repeated pairs — e.g.
+// the same avatar shown across many chat rows — share one GPU recolor instead
+// of each caller allocating its own canvas. keyed on object identity: `image`
+// is shared from the image cache and `target` is a stable palette object, so
+// equal appearances collide. a cached null records "no recolor needed" so that
+// case is memoized too. source palette is fixed per image, so it need not key.
+const recolorCache = new WeakMap<
+	HTMLImageElement,
+	WeakMap<SpritePalette, HTMLCanvasElement | null>
+>();
+
+export function recolorImageCached(
+	image: HTMLImageElement,
+	source: SpritePalette,
+	target: SpritePalette
+): HTMLCanvasElement | null {
+	let byTarget = recolorCache.get(image);
+	if (!byTarget) {
+		byTarget = new WeakMap();
+		recolorCache.set(image, byTarget);
+	}
+	const cached = byTarget.get(target);
+	if (cached !== undefined) return cached;
+	const colorMap = buildColorMap(source, target);
+	const result = colorMap.size > 0 ? recolorImage(image, colorMap) : null;
+	byTarget.set(target, result);
+	return result;
 }

@@ -17,6 +17,8 @@ const ROWS: readonly {action: MovementAction; label: string}[] = [
 	{action: "down", label: "Down"},
 	{action: "left", label: "Left"},
 	{action: "right", label: "Right"},
+	{action: "zoomIn", label: "Zoom in"},
+	{action: "zoomOut", label: "Zoom out"},
 ];
 
 // grid of per-direction key cells. clicking a cell arms capture: the next
@@ -58,7 +60,7 @@ export function MovementKeybinds({
 	return (
 		<div className="flex flex-col gap-2.5">
 			<div className="flex items-center justify-between">
-				<h3 className="font-medium">Movement keys</h3>
+				<h3 className="font-medium">Keybinds</h3>
 				<Button
 					variant="ghost"
 					size="xs"
@@ -103,7 +105,7 @@ export function MovementKeybinds({
 			<p className="text-xs text-muted-foreground">
 				{capture
 					? "Press a key to bind it — Esc cancels, Backspace clears."
-					: "Click a slot to rebind. Up to two keys per direction."}
+					: "Click a slot to rebind. Up to two keys per action."}
 			</p>
 		</div>
 	);

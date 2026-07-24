@@ -13,6 +13,7 @@ import {
 	PanelRightClose,
 } from "lucide-react";
 import {
+	memo,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -159,6 +160,11 @@ function ChatPanel({
 		}, [onWidthChange, side])
 	);
 
+	const onPlayerListToggle = useCallback(
+		() => onPlayerListCollapsedChange?.(!playerListCollapsed),
+		[onPlayerListCollapsedChange, playerListCollapsed]
+	);
+
 	const awaySide = side === "right" ? "left" : "right";
 
 	if (hidden) {
@@ -208,7 +214,7 @@ function ChatPanel({
 					<PlayerListSection
 						players={players}
 						collapsed={playerListCollapsed}
-						onToggle={() => onPlayerListCollapsedChange?.(!playerListCollapsed)}
+						onToggle={onPlayerListToggle}
 						height={playerListHeight}
 						onHeightChange={onPlayerListHeightChange}
 					/>
@@ -295,7 +301,7 @@ type PlayerListSectionProps = {
 	onHeightChange?: (height: number) => void;
 };
 
-function PlayerListSection({
+const PlayerListSection = memo(function PlayerListSection({
 	players,
 	collapsed,
 	onToggle,
@@ -365,4 +371,4 @@ function PlayerListSection({
 			)}
 		</div>
 	);
-}
+});

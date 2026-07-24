@@ -1,8 +1,10 @@
 import type {CharacterInput} from "@/game/types";
 import {InputBuffer} from "@/lib/inputBuffer";
+import {perfGauge} from "@/lib/perfHud";
 import {RoomMirror} from "@/lib/roomMirror";
 import {
 	WsClient,
+	type ConnectionError,
 	type ConnectionStatus,
 	type WsClientEvents,
 	type WsClientOpts,
@@ -34,6 +36,14 @@ const FOLLOWER_TICK_MS = 1000;
 // this long is gone (or about to be replaced) — start asking around again.
 const LEADER_STALE_MS = 2500;
 
+// crypto.randomUUID exists only in secure contexts (https or localhost), so it
+// is missing when the client is served over a plain-http lan ip. the tab id
+// just needs to be unique per tab, not cryptographically random.
+function randomTabId(): string {
+	if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 type TabMessage =
 	| {t: "hi"; from: string}
 	// `snap` is the mirror's baseline of currently-visible poses: snapshots are
@@ -49,6 +59,7 @@ type TabMessage =
 	| {t: "server"; msg: ServerMessage}
 	| {t: "snapshot"; snap: DecodedSnapshot}
 	| {t: "status"; status: ConnectionStatus}
+	| {t: "connError"; error: ConnectionError | null}
 	| {t: "heartbeat"}
 	| {t: "send"; msg: ClientMessage}
 	| {t: "reconnect"}
@@ -65,7 +76,7 @@ function isTabMessage(data: unknown): data is TabMessage {
 // need to know which.
 export class TabSyncedClient {
 	private readonly opts: WsClientOpts;
-	private readonly tabId = crypto.randomUUID();
+	private readonly tabId = randomTabId();
 	private events: WsClientEvents = {};
 	private channel: BroadcastChannel | null = null;
 	private leader: WsClient | null = null;
@@ -149,6 +160,7 @@ export class TabSyncedClient {
 	}
 
 	flushInputs(currentTick: number): void {
+		perfGauge("leader", this.leader ? 1 : 0);
 		if (!this.isController()) return;
 		if (this.leader) {
 			this.leader.flushInputs(currentTick);
@@ -156,6 +168,7 @@ export class TabSyncedClient {
 		}
 		if (this.status !== "connected") return;
 		const inputs = this.inputBuffer.collectUnacked(this.lastServerAck, currentTick);
+		perfGauge("unacked inputs", inputs.length);
 		if (inputs.length === 0) return;
 		this.post({t: "send", msg: {type: "input", ackTick: this.lastServerAck, inputs}});
 	}
@@ -219,6 +232,10 @@ export class TabSyncedClient {
 			onStatus: (status) => {
 				this.post({t: "status", status});
 				this.emitStatus(status);
+			},
+			onConnectionError: (error) => {
+				this.post({t: "connError", error});
+				this.events.onConnectionError?.(error);
 			},
 			onWelcome: (msg) => this.leaderRelay(msg),
 			onChat: (message) => this.leaderRelay({type: "chat", message}),
@@ -328,6 +345,10 @@ export class TabSyncedClient {
 				// before our first welcome the widget-facing status stays
 				// "connecting"; the state/welcome reply carries the real one.
 				if (this.hasWelcome) this.emitStatus(msg.status);
+				return;
+			case "connError":
+				this.noteLeaderSignal();
+				this.events.onConnectionError?.(msg.error);
 				return;
 			case "heartbeat":
 				this.noteLeaderSignal();

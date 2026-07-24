@@ -1,12 +1,11 @@
 import {CLASSIC_CHARACTER_ANIMATIONS, getAnimationFrame} from "@/sprites/animations";
-import {drawSpriteFrame, drawSpriteShadow} from "@/sprites/draw";
+import {drawSpriteFrame, drawSpriteShadow, silhouetteFor, type SpriteSource} from "@/sprites/draw";
 import {loadSpriteImage} from "@/sprites/imageCache";
-import {buildColorMap, recolorImage} from "@/sprites/paletteSwap";
+import {recolorImageCached} from "@/sprites/paletteSwap";
 import type {CharacterAnimationName} from "@/types";
 import {characterAabb, type BasicCharacter} from "./character";
 import {lerp} from "./math";
 import {isSwimTile} from "./terrain";
-import type {EntityId} from "./types";
 import type {World} from "./world";
 
 // water line sits a fixed fraction up the sprite; the sprite itself bobs
@@ -23,40 +22,38 @@ const SWIM_CLIP_PAD_PX = 16;
 // at the same screen height. water line is unaffected.
 const SWIM_SINK_PX = 3;
 
-type CharacterImage = {
-	readonly source: CanvasImageSource;
-};
+// a character's drawable pixels: the shared decoded sheet, or the shared
+// palette-swapped canvas when it wears one. both are cached per appearance
+// (sheet × palette), so every character with the same look draws from the
+// same pixels.
+function sourceFor(image: HTMLImageElement, char: BasicCharacter): SpriteSource {
+	if (!char.sprite.palette || !char.paletteSwap) return image;
+	return recolorImageCached(image, char.sprite.palette, char.paletteSwap) ?? image;
+}
 
 // owns image loading + palette swapping so the world renderer stays a pure
 // per-frame draw call. characters added after construction are picked up
 // lazily by ensureLoaded(); the first frame after they appear they simply
-// don't render, which avoids a sync await in the render path.
+// don't render, which avoids a sync await in the render path. all state is
+// keyed by appearance (a fixed catalog), never by entity, so join/leave churn
+// leaves nothing behind and appearance changes need no invalidation — the
+// next frame simply resolves the new look.
 export class CharacterRenderer {
-	private images = new Map<EntityId, CharacterImage>();
-	// per-id token for the in-flight load. invalidate() drops the entry so
-	// any older load that resolves later sees a missing/different token and
-	// discards its result, preventing a stale sprite from clobbering the
-	// freshly-requested one when appearance changes mid-flight.
-	private loading = new Map<EntityId, number>();
-	private nextToken = 0;
+	// sheet url -> decoded image, warmed by ensureLoaded so the draw path can
+	// resolve a character's appearance synchronously.
+	private readonly imagesByUrl = new Map<string, HTMLImageElement>();
 
 	async ensureLoaded(characters: Iterable<BasicCharacter>): Promise<void> {
-		const pending: Promise<void>[] = [];
-		for (const char of characters) {
-			if (this.images.has(char.id) || this.loading.has(char.id)) continue;
-			const token = ++this.nextToken;
-			this.loading.set(char.id, token);
-			pending.push(this.loadOne(char, token));
-		}
+		const urls = new Set<string>();
+		for (const char of characters) urls.add(char.sprite.imageUrl);
+		const pending = [...urls]
+			.filter((url) => !this.imagesByUrl.has(url))
+			.map(async (url) => {
+				// a failed load leaves the url absent (and evicted from the
+				// image cache), so a later ensureLoaded retries it.
+				this.imagesByUrl.set(url, await loadSpriteImage(url));
+			});
 		await Promise.all(pending);
-	}
-
-	// drop the cached image for `id` so the next ensureLoaded() reloads it
-	// against the character's current sprite/paletteSwap. used when callers
-	// mutate a character's appearance in place.
-	invalidate(id: EntityId): void {
-		this.images.delete(id);
-		this.loading.delete(id);
 	}
 
 	// alpha is the fraction of the way from the previous tick state to the
@@ -90,8 +87,9 @@ export class CharacterRenderer {
 		alpha: number,
 		swimming: boolean
 	): void {
-		const entry = this.images.get(char.id);
-		if (!entry) return;
+		const image = this.imagesByUrl.get(char.sprite.imageUrl);
+		if (!image) return;
+		const source = sourceFor(image, char);
 		const animations = char.sprite.animations ?? CLASSIC_CHARACTER_ANIMATIONS;
 		const animation = animations[pickAnimationName(char)];
 		const frame = getAnimationFrame(char.sprite.sheet, animation, char.animTimeMs);
@@ -120,7 +118,7 @@ export class CharacterRenderer {
 			ctx.clip();
 			drawSpriteFrame(
 				ctx,
-				entry.source,
+				source,
 				frame,
 				1,
 				x,
@@ -134,7 +132,7 @@ export class CharacterRenderer {
 		if (drawShadows)
 			drawSpriteShadow(
 				ctx,
-				entry.source,
+				silhouetteFor(source),
 				frame,
 				1,
 				x,
@@ -144,7 +142,7 @@ export class CharacterRenderer {
 			);
 		drawSpriteFrame(
 			ctx,
-			entry.source,
+			source,
 			frame,
 			1,
 			x,
@@ -152,24 +150,6 @@ export class CharacterRenderer {
 			char.spriteWidth,
 			char.spriteHeight
 		);
-	}
-
-	private async loadOne(char: BasicCharacter, token: number): Promise<void> {
-		try {
-			const image = await loadSpriteImage(char.sprite.imageUrl);
-			// invalidate() or a newer ensureLoaded() may have superseded us
-			// while loadImage was pending; drop the stale result so it can't
-			// overwrite a fresher sprite.
-			if (this.loading.get(char.id) !== token) return;
-			let source: CanvasImageSource = image;
-			if (char.sprite.palette && char.paletteSwap) {
-				const colorMap = buildColorMap(char.sprite.palette, char.paletteSwap);
-				if (colorMap.size > 0) source = recolorImage(image, colorMap);
-			}
-			this.images.set(char.id, {source});
-		} finally {
-			if (this.loading.get(char.id) === token) this.loading.delete(char.id);
-		}
 	}
 }
 

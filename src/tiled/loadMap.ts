@@ -1,4 +1,5 @@
-import {ITiledMap} from "@workadventure/tiled-map-type-guard";
+import {isRecord} from "@/lib/isRecord";
+import type {ITiledMap} from "@workadventure/tiled-map-type-guard";
 import {expandExternalTilesets} from "./externalTileset";
 
 export type TiledMap = ITiledMap & {
@@ -13,55 +14,45 @@ export type TiledMap = ITiledMap & {
 // the env is required: browser callers pass browserMapLoaderEnv (./browserEnv),
 // the server passes nodeMapLoaderEnv. keeping the platform impls out of this
 // module lets it type-check under both the browser and the node server config.
+// validateSchema is the optional full Tiled schema check — only the server wires
+// one up, see nodeMapLoaderEnv.
 export type MapLoaderEnv = {
 	readonly fetchJson: (url: string) => Promise<unknown>;
 	readonly resolveUrl: (base: string, relative: string) => string;
+	readonly validateSchema?: (data: unknown, source: string) => void;
 };
 
 export class TiledMapValidationError extends Error {
-	readonly issues: unknown;
-	constructor(message: string, issues: unknown) {
+	constructor(message: string) {
 		super(message);
 		this.name = "TiledMapValidationError";
-		this.issues = issues;
 	}
-}
-
-export function parseTiledMap(data: unknown, source?: string): TiledMap {
-	const result = ITiledMap.safeParse(data);
-	if (!result.success) {
-		throw new TiledMapValidationError(
-			`invalid tiled map${formatSource(source)}: ${result.error.message}`,
-			result.error.issues
-		);
-	}
-	return assertRenderableMap(result.data, source);
 }
 
 export async function loadTiledMap(url: string, env: MapLoaderEnv): Promise<TiledMap> {
 	const json = await env.fetchJson(url);
 	const expanded = await expandExternalTilesets(json, url, env);
-	return parseTiledMap(expanded, url);
-}
-
-function assertRenderableMap(map: ITiledMap, source?: string): TiledMap {
-	const {width, height, tilewidth, tileheight} = map;
-	if (
-		width === undefined ||
-		height === undefined ||
-		tilewidth === undefined ||
-		tileheight === undefined
-	) {
+	env.validateSchema?.(expanded, url);
+	if (!isRenderableMap(expanded))
 		throw new TiledMapValidationError(
-			`tiled map${formatSource(
-				source
-			)} is missing required dimensions (width, height, tilewidth, tileheight)`,
-			[]
+			`invalid tiled map in ${url}: expected an object with numeric width, height, tilewidth and tileheight plus layers and tilesets arrays`
 		);
-	}
-	return {...map, width, height, tilewidth, tileheight};
+	return expanded;
 }
 
-function formatSource(source: string | undefined): string {
-	return source ? ` in ${source}` : "";
+// the renderer and the tileset loader dereference these unconditionally.
+// everything nested below them is already guarded where it is used (layer kind,
+// tile data, tileset fields), so this is the whole invariant the loader owns —
+// which is why the browser can skip the full schema and still fail loudly on a
+// map that can't be drawn.
+function isRenderableMap(value: unknown): value is TiledMap {
+	if (!isRecord(value)) return false;
+	return (
+		Array.isArray(value.layers) &&
+		Array.isArray(value.tilesets) &&
+		typeof value.width === "number" &&
+		typeof value.height === "number" &&
+		typeof value.tilewidth === "number" &&
+		typeof value.tileheight === "number"
+	);
 }

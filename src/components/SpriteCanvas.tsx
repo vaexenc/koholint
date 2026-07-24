@@ -3,11 +3,12 @@ import {
 	computeSheetPadding,
 	drawSpriteFrame,
 	drawSpriteShadow,
+	silhouetteFor,
 	SPRITE_SHADOW_OFFSET_X_PX,
 	SPRITE_SHADOW_OFFSET_Y_PX,
 } from "@/sprites/draw";
 import {loadSpriteImage} from "@/sprites/imageCache";
-import {buildColorMap, recolorImage} from "@/sprites/paletteSwap";
+import {recolorImageCached} from "@/sprites/paletteSwap";
 import {sheetFootprint} from "@/sprites/sheet";
 import type {SpriteAnimation, SpriteAsset, SpritePalette} from "@/types";
 import {useEffect, useMemo, useRef, useState} from "react";
@@ -72,13 +73,12 @@ export function SpriteCanvas({
 	const baseSprite = sheet[0];
 	const padding = useMemo(() => computeSheetPadding(sheet), [sheet]);
 	const footprint = useMemo(() => sheetFootprint(sheet), [sheet]);
-	const colorMap = useMemo(
-		() => (sprite.palette && paletteSwap ? buildColorMap(sprite.palette, paletteSwap) : null),
-		[sprite.palette, paletteSwap]
-	);
 	const recolored = useMemo(
-		() => (image && colorMap && colorMap.size > 0 ? recolorImage(image, colorMap) : null),
-		[image, colorMap]
+		() =>
+			image && sprite.palette && paletteSwap
+				? recolorImageCached(image, sprite.palette, paletteSwap)
+				: null,
+		[image, sprite.palette, paletteSwap]
 	);
 	const source: CanvasImageSource | null = recolored ?? image;
 	const shadowMarginX = shadow ? SPRITE_SHADOW_OFFSET_X_PX * scale : 0;
@@ -97,7 +97,7 @@ export function SpriteCanvas({
 			if (shadow)
 				drawSpriteShadow(
 					ctx,
-					source,
+					silhouetteFor(source),
 					frame,
 					scale,
 					originX,
@@ -139,7 +139,7 @@ export function SpriteCanvas({
 				if (shadow)
 					drawSpriteShadow(
 						ctx,
-						source,
+						silhouetteFor(source),
 						frame,
 						scale,
 						originX,

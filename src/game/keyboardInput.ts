@@ -83,6 +83,13 @@ export class KeyboardInputProvider implements InputProvider {
 		};
 	}
 
+	// held zoom direction: +1 in, -1 out, 0 when neutral (or both held). read
+	// per frame by the camera, which owns the zoom rate and limits.
+	zoomInput(): number {
+		if (!this.enabled) return 0;
+		return Number(this.anyDown(this.bound.zoomIn)) - Number(this.anyDown(this.bound.zoomOut));
+	}
+
 	// suspends/resumes movement capture. clearing pressed keys on suspend stops a
 	// held key from "sticking" — its keyup may land while suspended (or on the
 	// dialog that stole focus), so we can't rely on receiving it.
@@ -128,8 +135,13 @@ export class KeyboardInputProvider implements InputProvider {
 
 function boundKeySet(bindings: KeyBindings): Set<string> {
 	return new Set(
-		[...bindings.up, ...bindings.down, ...bindings.left, ...bindings.right].map((k) =>
-			k.toLowerCase()
-		)
+		[
+			...bindings.up,
+			...bindings.down,
+			...bindings.left,
+			...bindings.right,
+			...bindings.zoomIn,
+			...bindings.zoomOut,
+		].map((k) => k.toLowerCase())
 	);
 }

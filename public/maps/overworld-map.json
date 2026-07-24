@@ -735,6 +735,11 @@
                                  "name":"teleportTo",
                                  "type":"object",
                                  "value":1241
+                                },
+                                {
+                                 "name":"teleportToOffsetY",
+                                 "type":"int",
+                                 "value":4
                                 }],
                          "rotation":0,
                          "type":"",
@@ -2208,6 +2213,11 @@
                                  "name":"teleportTo",
                                  "type":"object",
                                  "value":1130
+                                },
+                                {
+                                 "name":"teleportToOffsetY",
+                                 "type":"int",
+                                 "value":4
                                 }],
                          "rotation":0,
                          "type":"",

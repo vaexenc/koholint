@@ -8,7 +8,7 @@ import {CLASSIC_CHARACTER_ANIMATIONS} from "@/sprites/animations";
 import {PALETTES, type NamedPalette} from "@/sprites/palettes";
 import type {CharacterAnimationName} from "@/types";
 import {Check, IdCard, UserRound, type LucideIcon} from "lucide-react";
-import {useEffect, useState, type ReactNode} from "react";
+import {useEffect, useState, type ReactNode, type Ref} from "react";
 
 const PREVIEW_POSE_INTERVAL_MS = 1000;
 const PREVIEW_SCALE = 6;
@@ -170,16 +170,18 @@ type NameFieldProps = {
 	value: string;
 	onChange: (next: string) => void;
 	error?: string | null;
+	inputRef?: Ref<HTMLInputElement>;
 };
 
-function NameField({value, onChange, error}: NameFieldProps) {
+function NameField({value, onChange, error, inputRef}: NameFieldProps) {
 	return (
 		<label className="flex flex-col gap-1.5">
 			<SectionLabel icon={IdCard}>Display name</SectionLabel>
 			<Input
+				ref={inputRef}
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
-				placeholder="your name on koholint"
+				placeholder="your name"
 				maxLength={NAME_MAX_LENGTH}
 				aria-invalid={error ? true : undefined}
 			/>
@@ -199,6 +201,9 @@ export type AvatarPickerProps = {
 	// resolved name error, supplied by the owning surface (validation happens on
 	// save).
 	nameError?: string | null;
+	// lets the owning surface focus the name field from outside (e.g. to pull a
+	// rejection back into view).
+	nameInputRef?: Ref<HTMLInputElement>;
 	// drives the preview walk-cycle; pass the surrounding surface's open state so
 	// we don't churn an interval while it's hidden.
 	active: boolean;
@@ -214,6 +219,7 @@ export function AvatarPicker({
 	name,
 	onNameChange,
 	nameError,
+	nameInputRef,
 	active,
 }: AvatarPickerProps) {
 	const selected = AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0];
@@ -223,7 +229,14 @@ export function AvatarPicker({
 	const showName = name !== undefined && onNameChange !== undefined;
 	return (
 		<>
-			{showName ? <NameField value={name} onChange={onNameChange} error={nameError} /> : null}
+			{showName ? (
+				<NameField
+					value={name}
+					onChange={onNameChange}
+					error={nameError}
+					inputRef={nameInputRef}
+				/>
+			) : null}
 			<div className="flex flex-col gap-1.5">
 				<SectionLabel icon={UserRound}>Avatar</SectionLabel>
 				<div className="flex flex-col gap-4 rounded-lg border border-border p-3 sm:flex-row sm:gap-6 sm:p-4">

@@ -1,16 +1,13 @@
-import type {
-	ChatMessage,
-	ConnId,
-	DecodedSnapshot,
-	PlayerSnapshot,
-	ServerMessage,
-	ServerWelcome,
-	SnapshotPose,
+import {
+	pushBacklog,
+	type ChatMessage,
+	type ConnId,
+	type DecodedSnapshot,
+	type PlayerSnapshot,
+	type ServerMessage,
+	type ServerWelcome,
+	type SnapshotPose,
 } from "@/protocol";
-
-// mirrors the server's chat backlog cap (server/rooms.ts CHAT_BACKLOG_SIZE) so
-// a synthesized welcome hands a late tab the same history depth a real one would.
-const CHAT_BACKLOG_SIZE = 200;
 
 // leader-side cache of everything a welcome carries, kept current from the
 // live message stream. lets the leader hand a tab that opens mid-session a
@@ -38,7 +35,10 @@ export class RoomMirror {
 				this.serverTick = msg.serverTick;
 				this.lastAck = msg.serverTick;
 				this.players = new Map(msg.players.map((p) => [p.connId, p]));
-				this.chat = msg.chatBacklog.slice(-CHAT_BACKLOG_SIZE);
+				// rebuild through pushBacklog so the per-kind caps hold even if the
+				// payload arrives over-cap; a capped payload copies through unchanged.
+				this.chat = [];
+				for (const m of msg.chatBacklog) pushBacklog(this.chat, m);
 				// a fresh welcome means a fresh server-side interest baseline.
 				this.posesByIdIndex.clear();
 				return;
@@ -59,9 +59,7 @@ export class RoomMirror {
 			case "chat":
 			case "presence":
 			case "system":
-				this.chat.push(msg.message);
-				if (this.chat.length > CHAT_BACKLOG_SIZE)
-					this.chat.splice(0, this.chat.length - CHAT_BACKLOG_SIZE);
+				pushBacklog(this.chat, msg.message);
 				return;
 			case "profileRejected":
 				return;

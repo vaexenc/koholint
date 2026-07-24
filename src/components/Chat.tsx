@@ -1,5 +1,4 @@
-import {resolveAvatarSprite} from "@/components/avatar-picker/registry";
-import {SpriteCanvas} from "@/components/SpriteCanvas";
+import {useAvatarIconUrl} from "@/components/avatarIcon";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
 import {Popover, PopoverContent, PopoverTrigger} from "@/components/ui/popover";
@@ -9,9 +8,16 @@ import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/compon
 import {useMediaQuery} from "@/lib/useMediaQuery";
 import {cn} from "@/lib/utils";
 import type {ChatMessage} from "@/protocol";
-import {resolvePaletteSwap} from "@/sprites/palettes";
 import {ChevronDown, Send, Settings} from "lucide-react";
-import {useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref} from "react";
+import {
+	memo,
+	useCallback,
+	useLayoutEffect,
+	useRef,
+	useState,
+	type KeyboardEvent,
+	type Ref,
+} from "react";
 
 export type {ChatMessage};
 
@@ -28,8 +34,8 @@ export type ObscenityMode = (typeof OBSCENITY_MODES)[number];
 export type ChatSettings = {
 	timestampMode: TimestampMode;
 	avatarMode: AvatarMode;
-	// presence join/leave/reconnect lines off by default per HANDOFF; users opt
-	// in from the chat settings popover.
+	// presence join/leave/reconnect lines are off by default; users opt in from
+	// the chat settings popover.
 	presenceMode: PresenceMode;
 	// "on" reveals the unfiltered text the server ships alongside the censored
 	// version; off (default) keeps obscenities masked.
@@ -70,19 +76,25 @@ function fmtTime(ts: number, mode: TimestampMode) {
 	return `${h12}:${mm} ${d.getHours() < 12 ? "AM" : "PM"}`;
 }
 
-// inline 16px avatar cell. wraps SpriteCanvas in a fixed-size flex item so
-// rows stay aligned regardless of the per-sprite padding the canvas adds.
-export function AvatarCell({avatarId, paletteId}: {avatarId: string; paletteId: string | null}) {
+// inline 16px avatar cell. a fixed-size flex item so rows stay aligned
+// regardless of per-sprite padding; the <img> draws from the shared per-
+// appearance icon cache, so any number of rows cost one bitmap per look.
+export const AvatarCell = memo(function AvatarCell({
+	avatarId,
+	paletteId,
+}: {
+	avatarId: string;
+	paletteId: string | null;
+}) {
+	const iconUrl = useAvatarIconUrl(avatarId, paletteId);
 	return (
 		<span className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden">
-			<SpriteCanvas
-				sprite={resolveAvatarSprite(avatarId)}
-				scale={1}
-				paletteSwap={resolvePaletteSwap(paletteId)}
-			/>
+			{iconUrl && (
+				<img src={iconUrl} alt="" draggable={false} style={{imageRendering: "pixelated"}} />
+			)}
 		</span>
 	);
-}
+});
 
 function presenceVerb(action: "join" | "leave" | "reconnect") {
 	if (action === "join") return "joined";
@@ -118,11 +130,12 @@ function Chat(props: ChatProps) {
 	const [pinned, setPinned] = useState(true);
 	const scrollRootRef = useRef<HTMLDivElement | null>(null);
 	const viewportRef = useRef<HTMLElement | null>(null);
-	const {timestampMode, avatarMode, presenceMode, obscenityMode} = settings;
-
-	const updateSettings = (patch: Partial<ChatSettings>) => {
-		onSettingsChange?.({...settings, ...patch});
-	};
+	const updateSettings = useCallback(
+		(patch: Partial<ChatSettings>) => {
+			onSettingsChange?.({...settings, ...patch});
+		},
+		[onSettingsChange, settings]
+	);
 
 	useLayoutEffect(() => {
 		const vp =
@@ -144,12 +157,12 @@ function Chat(props: ChatProps) {
 		if (vp && pinned) vp.scrollTop = vp.scrollHeight;
 	}, [messages, pinned]);
 
-	const scrollToBottom = () => {
+	const scrollToBottom = useCallback(() => {
 		const vp = viewportRef.current;
 		if (vp) vp.scrollTop = vp.scrollHeight;
-	};
+	}, []);
 
-	const submit = () => {
+	const submit = useCallback(() => {
 		const text = input.trim();
 		if (!text || !canSend) return;
 		onSend?.(text);
@@ -157,23 +170,22 @@ function Chat(props: ChatProps) {
 		setPinned(true);
 		// drop focus so keyboard control returns to the map (Enter re-focuses).
 		if (inputRef && typeof inputRef !== "function") inputRef.current?.blur();
-	};
+	}, [input, canSend, onSend, inputRef]);
 
-	const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-		if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
-		e.preventDefault();
-		submit();
-	};
+	const onKeyDown = useCallback(
+		(e: KeyboardEvent<HTMLInputElement>) => {
+			if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+			e.preventDefault();
+			submit();
+		},
+		[submit]
+	);
 
 	return (
 		<TooltipProvider>
 			<div className={cn("flex h-full min-h-0 flex-col", className)}>
 				<ScrollArea ref={scrollRootRef} className="min-h-0 flex-1">
-					<div className="flex flex-col gap-1 px-3 py-2">
-						{messages.map((m) =>
-							renderRow(m, timestampMode, avatarMode, presenceMode, obscenityMode)
-						)}
-					</div>
+					<MessageList messages={messages} settings={settings} />
 				</ScrollArea>
 				<ComposeRow
 					pinned={pinned}
@@ -194,6 +206,32 @@ function Chat(props: ChatProps) {
 
 export default Chat;
 
+type MessageListProps = {
+	messages: readonly ChatMessage[];
+	settings: ChatSettings;
+};
+
+// isolates the scrolling list from the compose input's state: typing re-renders
+// Chat but not this, so the rows aren't re-mapped on every keystroke. re-renders
+// only when messages or settings change.
+const MessageList = memo(function MessageList({messages, settings}: MessageListProps) {
+	const {timestampMode, avatarMode, presenceMode, obscenityMode} = settings;
+	return (
+		<div className="flex flex-col gap-1 px-3 py-2">
+			{messages.map((m) => (
+				<ChatRow
+					key={m.id}
+					message={m}
+					timestampMode={timestampMode}
+					avatarMode={avatarMode}
+					presenceMode={presenceMode}
+					obscenityMode={obscenityMode}
+				/>
+			))}
+		</div>
+	);
+});
+
 // resolves which variant of a chat message's text to display: "on" reveals
 // the unfiltered original when the server shipped one. shared with the
 // in-world chat bubbles so both surfaces agree.
@@ -204,13 +242,26 @@ export function chatDisplayText(
 	return obscenityMode === "on" && m.rawText !== undefined ? m.rawText : m.text;
 }
 
-function renderRow(
-	m: ChatMessage,
-	timestampMode: TimestampMode,
-	avatarMode: AvatarMode,
-	presenceMode: PresenceMode,
-	obscenityMode: ObscenityMode
-) {
+type ChatRowProps = {
+	message: ChatMessage;
+	timestampMode: TimestampMode;
+	avatarMode: AvatarMode;
+	presenceMode: PresenceMode;
+	obscenityMode: ObscenityMode;
+};
+
+// memoized so appending a message re-renders only the new row, not the whole
+// list. each row mounts a canvas-backed avatar, so re-rendering every row on
+// every incoming message was the dominant main-thread cost. messages are
+// immutable and only appended, so a row's props stay referentially stable and
+// memo skips it; rows re-render only when the chat settings actually change.
+const ChatRow = memo(function ChatRow({
+	message: m,
+	timestampMode,
+	avatarMode,
+	presenceMode,
+	obscenityMode,
+}: ChatRowProps) {
 	const ts = fmtTime(m.timestamp, timestampMode);
 	if (m.kind === "system") {
 		return (
@@ -258,7 +309,7 @@ function renderRow(
 			</div>
 		</div>
 	);
-}
+});
 
 type ComposeRowProps = {
 	pinned: boolean;
@@ -273,7 +324,7 @@ type ComposeRowProps = {
 	inputRef?: Ref<HTMLInputElement>;
 };
 
-function ComposeRow({
+const ComposeRow = memo(function ComposeRow({
 	pinned,
 	onScrollToBottom,
 	settings,
@@ -336,7 +387,7 @@ function ComposeRow({
 			</div>
 		</div>
 	);
-}
+});
 
 type ChatSettingsPopoverProps = {
 	settings: ChatSettings;

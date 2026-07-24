@@ -14,6 +14,7 @@ import {
 	World,
 	type BasicCharacter,
 } from "@/game";
+import {drawPerfHud, perfCount, perfHudEnabled, perfSample} from "@/lib/perfHud";
 import {buildAnimationTable} from "@/tiled/animation";
 import {browserMapLoaderEnv} from "@/tiled/browserEnv";
 import {loadTiledMap, type TiledMap} from "@/tiled/loadMap";
@@ -30,9 +31,11 @@ import {
 } from "react";
 
 const INITIAL_SCALE = 3;
-const MIN_SCALE = 0.25;
+const MIN_SCALE = 0.5;
 const MAX_SCALE = 16;
 const ZOOM_STEP = 1.15;
+// scale multiplier per second of held keyboard zoom.
+const KEY_ZOOM_RATE_PER_SEC = 3;
 // per-second decay rate of the camera spring. higher = snappier.
 // at 7, the camera closes ~95% of the remaining distance in ~430ms.
 const CAMERA_SMOOTHING = 7;
@@ -155,6 +158,10 @@ export type MapRendererSetup = {
 	// clickToMove is set) from camera panning to character steering; two-finger
 	// pan/zoom, other-button drags, and tap/click-to-teleport keep working.
 	onSteer?: (point: {x: number; y: number} | null) => void;
+	// held keyboard-zoom direction, sampled per frame: +1 in, -1 out, 0 idle.
+	// the camera owns rate, anchoring, and limits; the game side owns which
+	// keys mean zoom and when input is suspended (modals, text entry).
+	zoomInput?: () => number;
 	dispose?: () => void;
 };
 
@@ -183,6 +190,9 @@ export type UseMapRendererParams = {
 	// minimum zoom to windowPx / maxViewWorldPx — the limit holds on any window
 	// size. null lifts the cap (admins, offline map).
 	maxViewWorldPx?: number | null;
+	// lowers the zoom-in ceiling below the absolute MAX_SCALE. null lifts the
+	// cap (admins, offline map).
+	maxZoom?: number | null;
 	// reports the viewport extent in world pixels (from the zoom the camera is
 	// heading to, so a zoom-out widens the report before the spring settles).
 	// throttled and only fired on meaningful change; feeds the server's
@@ -259,6 +269,7 @@ export function useMapRenderer({
 	insetRight = 0,
 	clickToMove = false,
 	maxViewWorldPx = null,
+	maxZoom = null,
 	onViewChange,
 	init,
 	step,
@@ -304,6 +315,7 @@ export function useMapRenderer({
 	const debugRef = useRef(debug);
 	const clickToMoveRef = useRef(clickToMove);
 	const maxViewRef = useRef(maxViewWorldPx);
+	const maxZoomRef = useRef(maxZoom);
 	const onViewChangeRef = useRef(onViewChange);
 	const insetsRef = useRef({left: insetLeft, right: insetRight});
 	// the insets the camera math actually uses; spring toward insetsRef in the
@@ -325,6 +337,9 @@ export function useMapRenderer({
 	useEffect(() => {
 		maxViewRef.current = maxViewWorldPx;
 	}, [maxViewWorldPx]);
+	useEffect(() => {
+		maxZoomRef.current = maxZoom;
+	}, [maxZoom]);
 	useEffect(() => {
 		onViewChangeRef.current = onViewChange;
 	});
@@ -371,7 +386,13 @@ export function useMapRenderer({
 		return Math.max(MIN_SCALE, window.innerWidth / maxView, window.innerHeight / maxView);
 	};
 
-	const clampScale = (scale: number) => Math.min(MAX_SCALE, Math.max(minScale(), scale));
+	// live zoom ceiling: the absolute maximum, lowered while a zoom cap applies.
+	const maxScale = () => Math.min(MAX_SCALE, maxZoomRef.current ?? MAX_SCALE);
+
+	// floor applied last: on a window so wide the view cap's floor exceeds the
+	// zoom ceiling, the floor must win — it upholds the interest-area contract
+	// with the server, while the ceiling is only cosmetic.
+	const clampScale = (scale: number) => Math.max(minScale(), Math.min(maxScale(), scale));
 
 	useEffect(() => {
 		let cancelled = false;
@@ -501,20 +522,50 @@ export function useMapRenderer({
 				let hadPlayerTarget = false;
 				let lastViewReport: {w: number; h: number; at: number} | null = null;
 				const renderFrame = (now: number) => {
+					const workStart = performance.now();
 					const dpr = window.devicePixelRatio || 1;
 					const cam = cameraRef.current;
 					const dt =
 						lastFrameTime === 0
 							? 0
 							: Math.min((now - lastFrameTime) / 1000, MAX_FRAME_DT);
+					perfCount("frames");
+					if (lastFrameTime !== 0) perfSample("frame gap ms", now - lastFrameTime);
 					lastFrameTime = now;
 					const k = dt > 0 ? 1 - Math.exp(-CAMERA_SMOOTHING * dt) : 0;
 
-					// the zoom floor moves with window size and with the cap being
-					// applied or lifted (admin status arrives after load); raising
+					// held keyboard zoom scales the target exponentially with time, so
+					// the zoom feels constant-speed at every scale. when not following
+					// it anchors to the viewport center — the keyboard has no cursor
+					// point to pin, and re-anchoring each frame (like the wheel does
+					// per event) keeps the center pinned through the spring.
+					const zoomDir = setupRef.current?.zoomInput?.() ?? 0;
+					if (zoomDir !== 0 && dt > 0) {
+						const next = clampScale(
+							cam.targetScale * Math.pow(KEY_ZOOM_RATE_PER_SEC, zoomDir * dt)
+						);
+						if (next !== cam.targetScale) {
+							cam.targetScale = next;
+							if (followRef.current) {
+								zoomAnchorRef.current = null;
+							} else {
+								const strip = viewportXStrip();
+								const centerX = (strip.start + strip.end) / 2;
+								const centerY = window.innerHeight / 2;
+								zoomAnchorRef.current = {
+									worldX: (centerX - cam.offsetX) / cam.scale,
+									worldY: (centerY - cam.offsetY) / cam.scale,
+									screenX: centerX,
+									screenY: centerY,
+								};
+							}
+						}
+					}
+
+					// the zoom limits move with window size and with the caps being
+					// applied or lifted (admin status arrives after load); re-clamping
 					// the target lets the spring glide the camera into compliance.
-					const minS = minScale();
-					if (cam.targetScale < minS) cam.targetScale = minS;
+					cam.targetScale = clampScale(cam.targetScale);
 
 					// report the viewport's world extent from the wider of the live
 					// and target scale: a zoom-out widens the report before the
@@ -550,7 +601,9 @@ export function useMapRenderer({
 
 					// step the simulation first so the camera spring chases this
 					// frame's freshly stepped follow target with zero extra latency.
+					const stepStart = performance.now();
 					const alpha = stepRef.current?.(dt * 1000) ?? 0;
+					perfSample("step ms", performance.now() - stepStart);
 					// the local player, resolved every frame whether follow is on or
 					// not: the camera only consumes it while following, but the HUD
 					// player-tile readout always does.
@@ -724,6 +777,7 @@ export function useMapRenderer({
 						window.innerHeight
 					);
 
+					const worldDrawStart = performance.now();
 					offCtx.setTransform(1, 0, 0, 1, 0, 0);
 					const elapsedMs = now - startTime;
 					const overlay = debugRef.current ? DEBUG_OVERLAY_ALL : DEFAULT_DEBUG_OVERLAY;
@@ -740,8 +794,9 @@ export function useMapRenderer({
 						mapPixelWidth,
 						mapPixelHeight
 					);
-					renderer.drawAll(offCtx, world, true, alpha);
 					debugOverlay.draw(offCtx, world, overlay);
+					perfSample("world draw ms", performance.now() - worldDrawStart);
+					const blitStart = performance.now();
 					ctx.setTransform(1, 0, 0, 1, 0, 0);
 					ctx.imageSmoothingEnabled = false;
 					ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -754,9 +809,22 @@ export function useMapRenderer({
 						cam.offsetY * dpr
 					);
 					ctx.drawImage(offscreen, 0, 0);
+					perfSample("blit ms", performance.now() - blitStart);
+					// characters draw straight onto the screen canvas through the
+					// camera transform, not into the world-pixel offscreen: there
+					// their sub-pixel positions snapped to whole world pixels, whose
+					// uneven per-axis stepping made walking (diagonals especially)
+					// stutter. here they quantize at device pixels — far finer — so
+					// interpolated motion stays visually smooth. the tradeoff is
+					// sprite pixels no longer aligning with the map's texel grid
+					// while moving.
+					const charDrawStart = performance.now();
+					renderer.drawAll(ctx, world, true, alpha);
+					perfSample("characters ms", performance.now() - charDrawStart);
 					if (setup.drawScreenOverlay) {
 						// switch to CSS-pixel space (DPR only) so overlays render
 						// crisp without the camera's nearest-neighbor upscale.
+						const overlayStart = performance.now();
 						ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 						ctx.imageSmoothingEnabled = true;
 						setup.drawScreenOverlay(
@@ -765,6 +833,11 @@ export function useMapRenderer({
 							(x, y) => [x * cam.scale + cam.offsetX, y * cam.scale + cam.offsetY],
 							cam.scale
 						);
+						perfSample("overlay ms", performance.now() - overlayStart);
+					}
+					if (perfHudEnabled) {
+						ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+						drawPerfHud(ctx, now);
 					}
 
 					// keep the grab affordance honest: no grab cursor while the left
@@ -808,6 +881,7 @@ export function useMapRenderer({
 						setPlayerTile(null);
 					}
 
+					perfSample("frame work ms", performance.now() - workStart);
 					frameHandle = requestAnimationFrame(renderFrame);
 				};
 				frameHandle = requestAnimationFrame(renderFrame);

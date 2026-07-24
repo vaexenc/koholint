@@ -45,6 +45,8 @@ export const Customized: Story = {
 			down: ["d"],
 			left: ["s"],
 			right: ["f"],
+			zoomIn: ["r"],
+			zoomOut: ["w"],
 		},
 	},
 };

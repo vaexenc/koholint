@@ -5,7 +5,7 @@ export type NamedPalette = {
 	name: string;
 	palette: SpritePalette;
 	// chat-name accent color for this palette. shared by client + server via
-	// paletteAccent.ts; mirrors the palette's primary hue but tuned for
+	// profileAccent.ts; mirrors the palette's primary hue but tuned for
 	// readability on the chat panel's dark background.
 	accentColor: HexColor;
 };

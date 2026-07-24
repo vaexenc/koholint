@@ -21,3 +21,13 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+// retryable connection trouble, e.g. the server hit its connection cap.
+export const ServerFull: Story = {
+	args: {message: "Server is full, retrying..."},
+};
+
+// terminal: another window took over the session; no retry suffix.
+export const SessionTaken: Story = {
+	args: {message: "Session was opened somewhere else"},
+};

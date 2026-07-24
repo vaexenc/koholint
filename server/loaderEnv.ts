@@ -1,4 +1,5 @@
-import type {MapLoaderEnv} from "@/tiled/loadMap";
+import {TiledMapValidationError, type MapLoaderEnv} from "@/tiled/loadMap";
+import {ITiledMap} from "@workadventure/tiled-map-type-guard";
 import {readFile} from "node:fs/promises";
 import {pathToFileURL} from "node:url";
 
@@ -17,4 +18,15 @@ async function readFsUrl(fileUrl: string): Promise<string> {
 export const nodeMapLoaderEnv: MapLoaderEnv = {
 	fetchJson: async (url) => JSON.parse(await readFsUrl(url)),
 	resolveUrl: resolveFsUrl,
+	// the full Tiled schema check lives here rather than in the shared loader
+	// because the validator carries ~79 kB of zod, which would ship to every
+	// browser for maps we author ourselves. the server loads the same map at
+	// boot, so a malformed one still fails loudly before anyone can connect.
+	validateSchema: (data, source) => {
+		const result = ITiledMap.safeParse(data);
+		if (!result.success)
+			throw new TiledMapValidationError(
+				`invalid tiled map in ${source}: ${result.error.message}`
+			);
+	},
 };

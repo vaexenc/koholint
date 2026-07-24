@@ -1,0 +1,1 @@
+ALTER TABLE `feedback` ADD `read` integer DEFAULT false NOT NULL;

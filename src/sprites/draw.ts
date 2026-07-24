@@ -43,9 +43,10 @@ function frameTopLeft(
 	};
 }
 
-// a single setTransform anchors the matrix at the far edge of any mirrored
-// axis so the draw call always uses local (0,0). save/restore the ctx so the
-// mirrored transform doesn't leak into the next caller.
+// translate/scale anchor the draw at the far edge of any mirrored axis so the
+// draw call always uses local (0,0). composed (not setTransform) so callers may
+// draw through an outer transform, e.g. the camera. save/restore the ctx so
+// the mirrored transform doesn't leak into the next caller.
 export function drawSpriteFrame(
 	ctx: CanvasRenderingContext2D,
 	image: CanvasImageSource,
@@ -63,14 +64,8 @@ export function drawSpriteFrame(
 	const dx = originX + topLeft.x * scale;
 	const dy = originY + topLeft.y * scale;
 	ctx.save();
-	ctx.setTransform(
-		mirrorX ? -1 : 1,
-		0,
-		0,
-		mirrorY ? -1 : 1,
-		mirrorX ? dx + w : dx,
-		mirrorY ? dy + h : dy
-	);
+	ctx.translate(mirrorX ? dx + w : dx, mirrorY ? dy + h : dy);
+	ctx.scale(mirrorX ? -1 : 1, mirrorY ? -1 : 1);
 	ctx.drawImage(image, sprite.x, sprite.y, sprite.width, sprite.height, 0, 0, w, h);
 	ctx.restore();
 }
@@ -106,12 +101,52 @@ export function drawSpriteShadow(
 	const tx = (mirrorX ? dx + w : dx) + SPRITE_SHADOW_OFFSET_X_PX * scale;
 	const ty =
 		(mirrorY ? dy + h : dy + h * (1 - SHADOW_SQUISH_Y)) + SPRITE_SHADOW_OFFSET_Y_PX * scale;
+	// `image` is a pre-baked black silhouette (see bakeSilhouette), so the
+	// shadow is a plain alpha-blended blit. drawing it with a live `ctx.filter`
+	// instead would allocate an offscreen surface per sprite every frame and
+	// dominate the frame once many characters are on screen. composed with the
+	// current transform, like drawSpriteFrame.
 	ctx.save();
-	ctx.setTransform(sx, 0, 0, sy, tx, ty);
-	// brightness(0) collapses rgb to black while preserving the sprite's
-	// alpha mask, giving a silhouette without needing an offscreen tint pass.
-	ctx.filter = "brightness(0)";
+	ctx.translate(tx, ty);
+	ctx.scale(sx, sy);
 	ctx.globalAlpha = SHADOW_ALPHA;
 	ctx.drawImage(image, sprite.x, sprite.y, sprite.width, sprite.height, 0, 0, w, h);
 	ctx.restore();
+}
+
+// bakes a black silhouette of a sprite sheet once at load time so shadows draw
+// with a plain blit. `source-in` keeps the fill only where the sheet has alpha,
+// preserving edge antialiasing without depending on canvas filter support.
+function bakeSilhouette(source: SpriteSource, width: number, height: number): HTMLCanvasElement {
+	const canvas = document.createElement("canvas");
+	canvas.width = width;
+	canvas.height = height;
+	const ctx = canvas.getContext("2d");
+	if (!ctx) return canvas;
+	ctx.drawImage(source, 0, 0);
+	ctx.globalCompositeOperation = "source-in";
+	ctx.fillStyle = "#000";
+	ctx.fillRect(0, 0, width, height);
+	return canvas;
+}
+
+// a sprite sheet source: the raw image or a recolored canvas copy of it.
+export type SpriteSource = HTMLImageElement | HTMLCanvasElement;
+
+// one baked shadow silhouette per source, shared by every consumer drawing
+// that appearance. WeakMap so an entry lives exactly as long as its
+// (module-cached) source does.
+const silhouetteCache = new WeakMap<SpriteSource, HTMLCanvasElement>();
+
+export function silhouetteFor(source: SpriteSource): HTMLCanvasElement {
+	const cached = silhouetteCache.get(source);
+	if (cached) return cached;
+	const isImage = source instanceof HTMLImageElement;
+	const baked = bakeSilhouette(
+		source,
+		isImage ? source.naturalWidth : source.width,
+		isImage ? source.naturalHeight : source.height
+	);
+	silhouetteCache.set(source, baked);
+	return baked;
 }

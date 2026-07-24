@@ -9,9 +9,9 @@ const LIFETIME_MS = 10000;
 const FADE_MS = 300;
 const MAX_STACK = 3;
 const MAX_LINES = 8;
-// bubble tops out at ~280px CSS with padding included.
-const MAX_TEXT_WIDTH = 260;
-const TEXT_SIZE = 16;
+// bubble tops out at ~350px CSS with padding included.
+const MAX_TEXT_WIDTH = 325;
+const TEXT_SIZE = 20;
 // paddings scale with the text; top is tighter than bottom so the stack sits
 // a touch higher over the text than below it.
 const PADDING_X = TEXT_SIZE * 0.6;

@@ -5,7 +5,7 @@
 
 import {ensureZeldaFontLoaded, ZELDA_FONT_STACK, ZELDA_LETTER_SPACING} from "@/game/zeldaFont";
 
-const TEXT_SIZE = 20;
+const TEXT_SIZE = 18;
 const FONT = `${TEXT_SIZE}px ${ZELDA_FONT_STACK}`;
 // gap between the sprite's head and the name; scales with the text so the
 // whole tag (and the chat bubble offset above it) grows together.

@@ -17,8 +17,10 @@ import {ShroudedStalfosSpriteAsset} from "@/sprites/assets/shrouded-stalfos";
 import {ShyguySpriteAsset} from "@/sprites/assets/shyguy";
 import {TarinSpriteAsset} from "@/sprites/assets/tarin";
 import {ZeldaSpriteAsset} from "@/sprites/assets/zelda";
-import {loadSpriteImage} from "@/sprites/imageCache";
 import type {SpriteAsset} from "@/types";
+
+// kept free of DOM-touching imports: the server pulls this catalog in to
+// resolve a player's accent color (see sprites/profileAccent.ts).
 
 export type Avatar = {
 	id: AvatarId;
@@ -62,12 +64,4 @@ export const AVATARS: readonly Avatar[] = AVATAR_IDS.map((id) => ({id, ...AVATAR
 
 export function resolveAvatarSprite(avatarId: string): SpriteAsset {
 	return (AVATARS.find((a) => a.id === avatarId) ?? AVATARS[0]).sprite;
-}
-
-// warms the shared image cache for every avatar sheet so a character can be
-// drawn the moment it appears (remote players can switch avatars at any time).
-export function preloadAvatarSprites(): void {
-	for (const avatar of AVATARS) {
-		loadSpriteImage(avatar.sprite.imageUrl).catch(() => {});
-	}
 }

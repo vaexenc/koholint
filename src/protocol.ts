@@ -2,9 +2,17 @@ import type {CharacterInput, Direction} from "@/game/types";
 import type {HexColor} from "@/types";
 
 // Wire protocol shared by client + server. JSON for control plane, binary
-// DataView for snapshot fan-out (decision documented in HANDOFF.md).
+// DataView for snapshot fan-out.
 
 export type ConnId = string;
+
+// ws close codes with protocol meaning, shared so both sides agree.
+// 1000/1008 are standard, 4xxx are ours.
+export const CLOSE_NORMAL = 1000;
+export const CLOSE_PROTOCOL = 1008;
+export const CLOSE_SHUTDOWN = 4001;
+export const CLOSE_SESSION_TAKEN = 4002;
+export const CLOSE_SERVER_FULL = 4003;
 
 export type Profile = {
 	readonly name: string;
@@ -45,6 +53,28 @@ export type ChatMessage =
 			readonly paletteId: string | null;
 			readonly timestamp: number;
 	  };
+
+// per-kind backlog caps: presence/system churn (a bot swarm joining and
+// leaving writes two presence entries per bot) must never evict conversation,
+// so each kind competes only with itself for backlog slots.
+export const CHAT_BACKLOG_CAPS: Readonly<Record<ChatMessage["kind"], number>> = {
+	chat: 200,
+	presence: 50,
+	system: 20,
+};
+
+// appends to a chronologically ordered backlog, evicting the oldest entry of
+// the same kind once that kind exceeds its cap. pushes are the only mutation,
+// so a single eviction per push holds the invariant; the O(n) scans are
+// trivial at the summed cap sizes.
+export function pushBacklog(backlog: ChatMessage[], msg: ChatMessage): void {
+	backlog.push(msg);
+	let count = 0;
+	for (const m of backlog) if (m.kind === msg.kind) count++;
+	if (count <= CHAT_BACKLOG_CAPS[msg.kind]) return;
+	const oldest = backlog.findIndex((m) => m.kind === msg.kind);
+	backlog.splice(oldest, 1);
+}
 
 export type PlayerSnapshot = {
 	readonly connId: ConnId;
@@ -112,9 +142,9 @@ export type ClientMessage =
 // --- Viewport / interest contract ----------------------------------------
 // most world pixels a non-admin viewport may show per axis: the client derives
 // its minimum zoom from this (window px / MAX_VIEW_WORLD_PX) and the server
-// clamps reported view extents to it. admins are exempt on both ends. 896px is
-// 56 tiles (16px) — 35% of the 160-tile map width at full zoom-out.
-export const MAX_VIEW_WORLD_PX = 896;
+// clamps reported view extents to it. admins are exempt on both ends. 768px is
+// 48 tiles (16px) — 30% of the 160-tile map width at full zoom-out.
+export const MAX_VIEW_WORLD_PX = 768;
 // interest slack beyond the visible rect, covering interpolation delay, the
 // camera spring lag and the server's coarser view of the camera. the exit
 // margin is wider than the entry margin so a player oscillating on the
@@ -151,6 +181,14 @@ export type ServerProfileChanged = {
 
 export type ServerProfileRejected = {readonly type: "profileRejected"; readonly reason: string};
 
+// sent right before a server-initiated close to say why in words a bare close
+// code can't carry (e.g. total cap vs per-IP cap). shown verbatim on the
+// loading screen, so the text is user-facing copy.
+export type ServerConnectionRejected = {
+	readonly type: "connectionRejected";
+	readonly message: string;
+};
+
 export type ServerJoin = {readonly type: "join"; readonly player: PlayerSnapshot};
 
 export type ServerLeave = {readonly type: "leave"; readonly connId: ConnId};
@@ -162,6 +200,7 @@ export type ServerMessage =
 	| ServerSystem
 	| ServerProfileChanged
 	| ServerProfileRejected
+	| ServerConnectionRejected
 	| ServerJoin
 	| ServerLeave;
 

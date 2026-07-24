@@ -8,4 +8,5 @@ CLAUDE.md
 dist
 public
 server/data
+server/db/migrations
 storybook-static

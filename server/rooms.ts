@@ -18,6 +18,7 @@ import {
 	INTEREST_MARGIN_PX,
 	MAX_INPUTS_PER_MESSAGE,
 	MAX_VIEW_WORLD_PX,
+	pushBacklog,
 	type ChatMessage,
 	type CoalescedInput,
 	type ConnId,
@@ -26,7 +27,7 @@ import {
 	type ServerMessage,
 	type SnapshotPose,
 } from "@/protocol";
-import {paletteAccent} from "@/sprites/paletteAccent";
+import {profileAccent} from "@/sprites/profileAccent";
 import type {TiledMap} from "@/tiled/loadMap";
 import type {HexColor, SpriteAsset} from "@/types";
 import {log} from "./log";
@@ -41,7 +42,6 @@ const STUB_SPRITE: SpriteAsset = {
 
 export const TICK_HZ = 30;
 export const SNAPSHOT_HZ = 15;
-export const CHAT_BACKLOG_SIZE = 200;
 export const MAX_INPUT_AGE_TICKS = TICK_HZ * 30;
 // clients stamp inputs against their own estimate of the server clock, so a
 // small lead over serverTick is normal (latency + clock skew). accept up to a
@@ -178,13 +178,17 @@ export class Room {
 			connId: opts.connId,
 			idIndex,
 			profile: opts.profile,
-			color: paletteAccent(opts.profile.paletteId),
+			color: profileAccent(opts.profile),
 			isAdmin: opts.isAdmin,
 			resumeToken: opts.resumeToken,
 			character,
 			inputProvider,
 			pendingInputs: new Map(),
-			lastAppliedClientTick: 0,
+			// acked from the join tick, not 0: ackTickForYou means "replay your
+			// recorded inputs from here", and a fresh session has nothing older.
+			// acking 0 made clients replay the server's entire uptime after a
+			// resume — one frozen loop per snapshot until the first input landed.
+			lastAppliedClientTick: this.serverTick,
 			viewW: MAX_VIEW_WORLD_PX,
 			viewH: MAX_VIEW_WORLD_PX,
 			visible: new Set(),
@@ -241,7 +245,7 @@ export class Room {
 		const session = this.sessions.get(connId);
 		if (!session) return {ok: false, reason: "no such session"};
 		session.profile = profile;
-		session.color = paletteAccent(profile.paletteId);
+		session.color = profileAccent(profile);
 		return {ok: true, color: session.color};
 	}
 
@@ -271,9 +275,7 @@ export class Room {
 	}
 
 	pushChat(msg: ChatMessage): void {
-		this.chatBacklog.push(msg);
-		if (this.chatBacklog.length > CHAT_BACKLOG_SIZE)
-			this.chatBacklog.splice(0, this.chatBacklog.length - CHAT_BACKLOG_SIZE);
+		pushBacklog(this.chatBacklog, msg);
 	}
 
 	start(): void {

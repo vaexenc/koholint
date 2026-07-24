@@ -9,6 +9,7 @@ import ChatPanel, {
 	type UiSide,
 } from "@/components/ChatPanel";
 import ConnectionWidget, {type Mode} from "@/components/ConnectionWidget";
+import {FeedbackWidget} from "@/components/FeedbackWidget";
 import {HudBar} from "@/components/HudBar";
 import {LoadingScreen} from "@/components/LoadingScreen";
 import {PositionWidget} from "@/components/PositionWidget";
@@ -31,7 +32,7 @@ import {useLatestRef} from "@/lib/useLatestRef";
 import {useLocalStorage} from "@/lib/useLocalStorage";
 import {useIsSmallScreen} from "@/lib/useMediaQuery";
 import {validateName} from "@/lib/validateName";
-import {type ConnectionStatus} from "@/lib/wsClient";
+import {type ConnectionError, type ConnectionStatus} from "@/lib/wsClient";
 import {useMapRenderer, type MapRendererInitContext} from "@/pages/useMapRenderer";
 import {
 	MAX_VIEW_WORLD_PX,
@@ -42,12 +43,14 @@ import {
 	type ServerProfileChanged,
 	type ServerWelcome,
 } from "@/protocol";
-import {paletteAccent} from "@/sprites/paletteAccent";
+import {profileAccent} from "@/sprites/profileAccent";
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 
 const DEFAULT_MAP_URL = "/maps/overworld-map.json";
 const LEARNED_MOVEMENT_KEY = "koholint:learnedMovement";
 const CHAT_BUFFER_MAX = 500;
+// zoom-in ceiling for everyone but admins — twice the initial camera scale.
+const MAX_ZOOM = 6;
 
 function buildWsUrl(): string {
 	const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -72,7 +75,7 @@ function selfPlayerListEntry(connId: ConnId, profile: Profile): PlayerListEntry 
 	return {
 		connId,
 		name: profile.name,
-		color: paletteAccent(profile.paletteId),
+		color: profileAccent(profile),
 		avatarId: profile.avatarId,
 		paletteId: profile.paletteId,
 	};
@@ -80,6 +83,27 @@ function selfPlayerListEntry(connId: ConnId, profile: Profile): PlayerListEntry 
 
 function sameProfile(a: Profile, b: Profile): boolean {
 	return a.name === b.name && a.avatarId === b.avatarId && a.paletteId === b.paletteId;
+}
+
+// fallback copy when the server didn't say why in a connectionRejected frame
+// (e.g. it's unreachable). ascii-only: the zelda pixel font has no
+// ellipsis/em-dash glyphs.
+const CONNECTION_ERROR_COPY: Record<ConnectionError["kind"], string> = {
+	serverFull: "Server is full",
+	sessionTaken: "Session was opened somewhere else",
+	rejected: "Server rejected the connection",
+	unreachable: "Can't reach server",
+};
+
+// copy for the loading screen while the join is stuck. server-authored text
+// wins; a non-terminal status means WsClient is still retrying, so say so.
+function connectionMessage(
+	error: ConnectionError | null,
+	status: ConnectionStatus
+): string | undefined {
+	if (!error) return status === "closed" ? "Disconnected" : undefined;
+	const base = error.message ?? CONNECTION_ERROR_COPY[error.kind];
+	return status === "closed" ? base : `${base}, retrying...`;
 }
 
 // the one screen the player sees:
@@ -140,7 +164,9 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 
 	const [profileOpen, setProfileOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [feedbackOpen, setFeedbackOpen] = useState(false);
 	const [status, setStatus] = useState<ConnectionStatus>("idle");
+	const [connError, setConnError] = useState<ConnectionError | null>(null);
 	const [phase, setPhase] = useState<JoinPhase>({kind: "preMap"});
 	const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
 	const [players, setPlayers] = useState<ReadonlyMap<ConnId, PlayerListEntry>>(() => new Map());
@@ -150,7 +176,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 	// any modal steals the keyboard: its keys (typing, focus nav, keybind
 	// capture) shouldn't drive the character. the editable-target guard in
 	// KeyboardInputProvider already covers the chat box and name field.
-	const modalOpen = profileOpen || settingsOpen;
+	const modalOpen = profileOpen || settingsOpen || feedbackOpen;
 
 	const profileRef = useLatestRef(profile);
 	const chatBubblesRef = useLatestRef(chatBubbles);
@@ -283,6 +309,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 		wsRef.current = ws;
 		ws.setEvents({
 			onStatus: setStatus,
+			onConnectionError: setConnError,
 			onWelcome: handleWelcome,
 			onSnapshot: (snap) => {
 				const ws = wsRef.current;
@@ -371,6 +398,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 				drawScreenOverlay: game.drawScreenOverlay.bind(game),
 				onSteer: (point: {x: number; y: number} | null) =>
 					game.selfSteer.setScreenTarget(point),
+				zoomInput: () => game.selfKeyboard.zoomInput(),
 				dispose: () => {
 					// leaving the page (e.g. switching to offline mode): let the
 					// offline map pick up where the player stood.
@@ -424,6 +452,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 		// admins zoom without limit and see every player; everyone else is
 		// capped so no viewport can outgrow the server's interest area.
 		maxViewWorldPx: isAdmin ? null : MAX_VIEW_WORLD_PX,
+		maxZoom: isAdmin ? null : MAX_ZOOM,
 		onViewChange,
 		init,
 		step,
@@ -459,7 +488,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 	);
 
 	return (
-		<div className="fixed inset-0 overflow-hidden bg-neutral-900 font-mono">
+		<div className="fixed inset-0 overflow-hidden bg-neutral-950 font-mono">
 			<canvas {...canvasProps} />
 
 			{state.status === "error" ? (
@@ -469,7 +498,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 					</pre>
 				</div>
 			) : phase.kind === "preMap" || phase.kind === "joining" ? (
-				<LoadingScreen />
+				<LoadingScreen message={connectionMessage(connError, status)} />
 			) : (
 				<>
 					<ChatPanel
@@ -501,6 +530,9 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange}: MapPageProps) {
 						serverNameError={serverNameError}
 						onChange={onAvatarPaletteChange}
 					/>
+					<HudBar edge="top" reversed={uiReversed}>
+						<FeedbackWidget name={profile.name} onOpenChange={setFeedbackOpen} />
+					</HudBar>
 					<HudBar reversed={uiReversed}>
 						<ConnectionWidget
 							mode="online"

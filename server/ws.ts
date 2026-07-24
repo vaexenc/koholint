@@ -1,5 +1,10 @@
 import {NEUTRAL_INPUT} from "@/game/types";
 import {
+	CLOSE_NORMAL,
+	CLOSE_PROTOCOL,
+	CLOSE_SERVER_FULL,
+	CLOSE_SESSION_TAKEN,
+	CLOSE_SHUTDOWN,
 	type ChatMessage,
 	type ClientMessage,
 	type CoalescedInput,
@@ -7,11 +12,12 @@ import {
 	type Profile,
 	type ServerMessage,
 } from "@/protocol";
-import {paletteAccent} from "@/sprites/paletteAccent";
-import {randomUUID, timingSafeEqual} from "node:crypto";
+import {randomUUID} from "node:crypto";
 import type {IncomingMessage, Server} from "node:http";
 import type {Duplex} from "node:stream";
 import {WebSocketServer, type WebSocket} from "ws";
+import {matchesAdminToken} from "./adminAuth";
+import {envInt} from "./env";
 import {log} from "./log";
 import {parseClientMessage} from "./parseMessage";
 import {censorProfanity, checkName} from "./profanity";
@@ -42,14 +48,11 @@ const PONG_TIMEOUT_MS = 30_000;
 const WS_MAX_PAYLOAD_BYTES = 128 * 1024;
 // concurrency backstops enforced at the upgrade, before a socket is tracked.
 // mainly relevant once HOST is widened past loopback; tune per deployment.
-const MAX_TOTAL_CONNECTIONS = 1024;
-const MAX_CONNECTIONS_PER_IP = 32;
-
-// close codes carried in the ws CloseEvent — see HANDOFF.md.
-const CLOSE_NORMAL = 1000;
-const CLOSE_PROTOCOL = 1008;
-export const CLOSE_SHUTDOWN = 4001;
-const CLOSE_SESSION_TAKEN = 4002;
+const MAX_TOTAL_CONNECTIONS = envInt("MAX_TOTAL_CONNECTIONS", 1024);
+const MAX_CONNECTIONS_PER_IP = envInt("MAX_CONNECTIONS_PER_IP", 1024);
+// an over-cap reject completes the handshake just to deliver a readable close
+// frame; terminate after this grace in case the peer never acks the close.
+const REJECT_CLOSE_GRACE_MS = 2000;
 
 type Pending = {
 	socket: WebSocket;
@@ -129,12 +132,25 @@ export class WsServer {
 			return;
 		}
 		const ip = clientIp(req);
-		if (
-			this.totalConnections >= MAX_TOTAL_CONNECTIONS ||
-			(this.connectionsByIp.get(ip) ?? 0) >= MAX_CONNECTIONS_PER_IP
-		) {
+		const overTotal = this.totalConnections >= MAX_TOTAL_CONNECTIONS;
+		const overIp = (this.connectionsByIp.get(ip) ?? 0) >= MAX_CONNECTIONS_PER_IP;
+		if (overTotal || overIp) {
 			log.warn(`ws: connection cap reached, rejecting ${ip}`);
-			socket.destroy();
+			// a raw destroy() reaches the browser as an anonymous 1006, which the
+			// client can't tell apart from "server down". finish the handshake,
+			// say why in a pre-close frame the loading screen shows verbatim, and
+			// close properly. the reject never emits "connection", so it takes no
+			// hello timer or slot.
+			this.wss.handleUpgrade(req, socket, head, (ws) => {
+				safeSendJson(ws, {
+					type: "connectionRejected",
+					message: overTotal
+						? "Server is full"
+						: "Too many connections from your address",
+				});
+				ws.close(CLOSE_SERVER_FULL, "server full");
+				setTimeout(() => ws.terminate(), REJECT_CLOSE_GRACE_MS).unref();
+			});
 			return;
 		}
 		this.trackConnection(ip, socket);
@@ -206,7 +222,7 @@ export class WsServer {
 
 	private handleHello(socket: WebSocket, msg: ClientMessage): void {
 		if (msg.type !== "hello") return;
-		const isAdmin = this.isAdminToken(msg.adminToken);
+		const isAdmin = matchesAdminToken(this.adminToken, msg.adminToken);
 		const nameCheck = checkName(msg.name, isAdmin);
 		if (!nameCheck.ok) {
 			safeSendJson(socket, {type: "profileRejected", reason: nameCheck.reason});
@@ -399,7 +415,7 @@ export class WsServer {
 			kind: "chat",
 			senderId: conn.connId,
 			name: conn.session.profile.name,
-			color: paletteAccent(conn.session.profile.paletteId),
+			color: conn.session.color,
 			avatarId: conn.session.profile.avatarId,
 			paletteId: conn.session.profile.paletteId,
 			text: filtered,
@@ -458,7 +474,7 @@ export class WsServer {
 			action,
 			senderId: session.connId,
 			name: session.profile.name,
-			color: paletteAccent(session.profile.paletteId),
+			color: session.color,
 			avatarId: session.profile.avatarId,
 			paletteId: session.profile.paletteId,
 			timestamp: Date.now(),
@@ -482,14 +498,6 @@ export class WsServer {
 				// noop
 			}
 		}
-	}
-
-	private isAdminToken(token: string | undefined): boolean {
-		if (!this.adminToken || !token) return false;
-		const expected = Buffer.from(this.adminToken);
-		const got = Buffer.from(token);
-		if (expected.length !== got.length) return false;
-		return timingSafeEqual(expected, got);
 	}
 
 	private makeListener(): RoomListener {

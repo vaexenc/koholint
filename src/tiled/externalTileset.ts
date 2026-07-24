@@ -4,6 +4,7 @@
 // animation table, tile property scans) then stays oblivious to whether the
 // source on disk was inline or external.
 
+import {isRecord} from "@/lib/isRecord";
 import type {MapLoaderEnv} from "./loadMap";
 
 type Json = Record<string, unknown>;
@@ -13,7 +14,7 @@ export async function expandExternalTilesets(
 	mapUrl: string,
 	env: MapLoaderEnv
 ): Promise<unknown> {
-	if (!isObject(data)) return data;
+	if (!isRecord(data)) return data;
 	const tilesets = data.tilesets;
 	if (!Array.isArray(tilesets)) return data;
 	const expanded = await Promise.all(
@@ -27,12 +28,12 @@ async function expandIfExternal(
 	mapUrl: string,
 	env: MapLoaderEnv
 ): Promise<unknown> {
-	if (!isObject(entry)) return entry;
+	if (!isRecord(entry)) return entry;
 	const {source, firstgid} = entry;
 	if (typeof source !== "string" || typeof firstgid !== "number") return entry;
 	const tilesetUrl = env.resolveUrl(mapUrl, source);
 	const tileset = await env.fetchJson(tilesetUrl);
-	if (!isObject(tileset)) throw new Error(`external tileset ${tilesetUrl} is not a json object`);
+	if (!isRecord(tileset)) throw new Error(`external tileset ${tilesetUrl} is not a json object`);
 	return embedTileset(tileset, tilesetUrl, firstgid, env);
 }
 
@@ -50,8 +51,4 @@ function embedTileset(
 	if (typeof tileset.image === "string")
 		embedded.image = env.resolveUrl(tilesetUrl, tileset.image);
 	return embedded;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

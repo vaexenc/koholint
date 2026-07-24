@@ -16,8 +16,8 @@ export type SpawnRegion =
 // scans every object layer for objects tagged `spawn=true`. point objects
 // (no positive width/height) become point spawns; rect objects become a
 // uniformly-sampled rectangle. ellipses/polygons/polylines are intentionally
-// unsupported per HANDOFF — they're skipped with a warning so map authors get
-// feedback at boot instead of silent fallthrough.
+// unsupported — they're skipped with a warning so map authors get feedback at
+// boot instead of silent fallthrough.
 export function collectSpawnRegions(
 	map: TiledMap,
 	onWarn: (message: string) => void = console.warn

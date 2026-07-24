@@ -1,4 +1,5 @@
 import type {Direction} from "@/game/types";
+import {isRecord} from "@/lib/isRecord";
 import {getStored, setStored} from "@/lib/safeStorage";
 
 export type PlayerPose = {
@@ -47,10 +48,6 @@ const DIRECTIONS: readonly Direction[] = ["up", "down", "left", "right"];
 
 function isDirection(value: unknown): value is Direction {
 	return DIRECTIONS.some((d) => d === value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
 }
 
 // stored json is untrusted; rebuild the pose only from validated fields.

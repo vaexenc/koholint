@@ -3,7 +3,9 @@ import type {CoalescedInput} from "@/protocol";
 
 // drop inputs older than ~30s so a long disconnect doesn't shower the server
 // with stale frames on resume. matches MAX_INPUT_AGE_TICKS on the server.
-const INPUT_MAX_AGE_TICKS = 30 * 30;
+// exported as the replay-window bound: any tick this far behind the newest
+// recorded one is guaranteed pruned, so replaying it can only yield NEUTRAL.
+export const INPUT_MAX_AGE_TICKS = 30 * 30;
 
 // per-tab record of locally sampled inputs, keyed by server tick. shared by
 // the leader's wire client and the follower mirror so prediction replay and

@@ -1,6 +1,7 @@
 import {AdminBadge} from "@/components/AdminBadge";
 import {resolveAvatarSprite} from "@/components/avatar-picker/registry";
 import ConnectionWidget, {type Mode} from "@/components/ConnectionWidget";
+import {FeedbackWidget} from "@/components/FeedbackWidget";
 import {HudBar} from "@/components/HudBar";
 import {LoadingScreen} from "@/components/LoadingScreen";
 import {PositionWidget} from "@/components/PositionWidget";
@@ -65,7 +66,7 @@ type OfflineGame = {
 	player: BasicCharacter;
 	keyboard: KeyboardInputProvider;
 	steer: PointerSteerInputProvider;
-	invalidatePlayer: () => void;
+	reloadPlayerSprite: () => void;
 };
 
 function MapPage({
@@ -96,10 +97,11 @@ function MapPage({
 	const [clickToMove, setClickToMove] = useLocalStorage(CLICK_TO_MOVE_KEY, true);
 	const [profileOpen, setProfileOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [feedbackOpen, setFeedbackOpen] = useState(false);
 	const [isAdmin] = useState(hasAdminToken);
-	// any modal steals the keyboard: its keys (focus nav, keybind capture)
-	// shouldn't drive the character underneath.
-	const modalOpen = profileOpen || settingsOpen;
+	// any modal steals the keyboard: its keys (typing, focus nav, keybind
+	// capture) shouldn't drive the character underneath.
+	const modalOpen = profileOpen || settingsOpen || feedbackOpen;
 
 	// mirrored into refs so init (called once per map load) can read the
 	// current values when first constructing the player without taking
@@ -156,11 +158,10 @@ function MapPage({
 			steer.setEnabled(!modalOpenRef.current);
 			world.addCharacter(player, new CompositeInputProvider([keyboard, steer]));
 			resolveCharacterCollision(player, world.grid, world.holes);
-			const invalidatePlayer = () => {
-				renderer.invalidate(player.id);
+			const reloadPlayerSprite = () => {
 				renderer.ensureLoaded([player]).catch(() => {});
 			};
-			gameRef.current = {world, clock, player, keyboard, steer, invalidatePlayer};
+			gameRef.current = {world, clock, player, keyboard, steer, reloadPlayerSprite};
 			return {
 				follow: () => player,
 				initialFocus: {
@@ -168,6 +169,7 @@ function MapPage({
 					y: player.y + player.spriteHeight / 2,
 				},
 				onSteer: (point: {x: number; y: number} | null) => steer.setScreenTarget(point),
+				zoomInput: () => keyboard.zoomInput(),
 				dispose: () => {
 					// leaving the page: the online map starts its camera on this
 					// pose after a mode switch, storage restores it next session.
@@ -245,19 +247,19 @@ function MapPage({
 		return () => window.removeEventListener("pagehide", save);
 	}, [mapUrl]);
 
-	// push the latest avatar/palette selection onto the player and force the
-	// renderer to refetch its image. gated on state.status so the first apply
-	// happens after the hook's init has populated gameRef.
+	// push the latest avatar/palette selection onto the player and make sure
+	// its sheet is loaded. gated on state.status so the first apply happens
+	// after the hook's init has populated gameRef.
 	useEffect(() => {
 		const game = gameRef.current;
 		if (!game || state.status !== "ok") return;
 		game.player.sprite = resolveAvatarSprite(profile.avatarId);
 		game.player.paletteSwap = resolvePaletteSwap(profile.paletteId);
-		game.invalidatePlayer();
+		game.reloadPlayerSprite();
 	}, [profile.avatarId, profile.paletteId, state.status]);
 
 	return (
-		<div className="fixed inset-0 overflow-hidden bg-neutral-900 font-mono">
+		<div className="fixed inset-0 overflow-hidden bg-neutral-950 font-mono">
 			<canvas {...canvasProps} />
 			{state.status === "error" ? (
 				<div className="absolute inset-0 grid place-items-center p-4">
@@ -278,6 +280,9 @@ function MapPage({
 							setProfile((prev) => ({...prev, avatarId: a, paletteId: p}))
 						}
 					/>
+					<HudBar edge="top">
+						<FeedbackWidget name={profile.name} onOpenChange={setFeedbackOpen} />
+					</HudBar>
 					<HudBar>
 						{onModeChange && (
 							<ConnectionWidget

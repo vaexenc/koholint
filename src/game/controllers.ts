@@ -112,6 +112,8 @@ export type KeyBindings = {
 	readonly down: readonly string[];
 	readonly left: readonly string[];
 	readonly right: readonly string[];
+	readonly zoomIn: readonly string[];
+	readonly zoomOut: readonly string[];
 };
 
 export const DEFAULT_KEY_BINDINGS: KeyBindings = {
@@ -119,6 +121,8 @@ export const DEFAULT_KEY_BINDINGS: KeyBindings = {
 	down: ["s", "arrowdown"],
 	left: ["a", "arrowleft"],
 	right: ["d", "arrowright"],
+	zoomIn: ["q"],
+	zoomOut: ["e"],
 };
 
 const DIRECTIONS: readonly Direction[] = ["up", "down", "left", "right"];

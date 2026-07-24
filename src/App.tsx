@@ -1,4 +1,5 @@
-import {preloadAvatarSprites} from "@/components/avatar-picker/registry";
+import {preloadAvatarSprites} from "@/components/avatar-picker/preload";
+import {NotFound} from "@/components/NotFound";
 import MapPage from "@/pages/MapPage";
 import RootMapPage from "@/pages/RootMapPage";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
@@ -6,6 +7,7 @@ import {
 	createRootRoute,
 	createRoute,
 	createRouter,
+	lazyRouteComponent,
 	Outlet,
 	RouterProvider,
 } from "@tanstack/react-router";
@@ -33,9 +35,17 @@ const testMapRoute = createRoute({
 	),
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, testMapRoute]);
+const adminRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/admin",
+	// split into its own chunk: the panel's markup is fetched when someone opens
+	// the route, rather than shipped in the bundle every player downloads.
+	component: lazyRouteComponent(() => import("@/pages/AdminPage")),
+});
 
-const router = createRouter({routeTree});
+const routeTree = rootRoute.addChildren([indexRoute, testMapRoute, adminRoute]);
+
+const router = createRouter({routeTree, defaultNotFoundComponent: NotFound});
 
 declare module "@tanstack/react-router" {
 	interface Register {

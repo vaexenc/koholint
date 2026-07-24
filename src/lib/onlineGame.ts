@@ -26,7 +26,9 @@ import {
 	type World,
 } from "@/game";
 import {type CharacterInput, type Direction} from "@/game/types";
+import {INPUT_MAX_AGE_TICKS} from "@/lib/inputBuffer";
 import {sameMovementBindings} from "@/lib/movementBindings";
+import {perfCount, perfGauge, perfSample} from "@/lib/perfHud";
 import {hasCoarsePointer} from "@/lib/pointerType";
 import {
 	applyRemoteInterp,
@@ -47,11 +49,11 @@ import {
 	type ServerProfileChanged,
 	type ServerWelcome,
 } from "@/protocol";
-import {paletteAccent} from "@/sprites/paletteAccent";
 import {resolvePaletteSwap} from "@/sprites/palettes";
+import {profileAccent} from "@/sprites/profileAccent";
 
-// the server's authoritative tick rate (HANDOFF locks 30Hz). client mirrors it
-// so locally-predicted ticks line up with server ticks 1:1 after the offset.
+// the server's authoritative tick rate. client mirrors it so locally-predicted
+// ticks line up with server ticks 1:1 after the offset.
 const SERVER_TICK_HZ = 30;
 const SELF_ENTITY_ID = "self";
 
@@ -181,14 +183,17 @@ export class OnlineGame {
 		remote.color = msg.color;
 		remote.character.sprite = resolveAvatarSprite(msg.profile.avatarId);
 		remote.character.paletteSwap = resolvePaletteSwap(msg.profile.paletteId);
-		this.invalidateRemote(msg.connId);
+		this.renderer.ensureLoaded([remote.character]).catch(() => {});
 	}
 
 	applySnapshot(snap: DecodedSnapshot, net: GameNet): void {
 		// re-anchor our server-tick estimate on every snapshot — ratchets up only
 		// (see ServerClock.syncToServerTick) so a local stall can't fall behind.
 		this.serverClock.syncToServerTick(snap.serverTick);
-		const now = performance.now();
+		perfCount("snapshots");
+		perfSample("snap poses", snap.poses.length);
+		const handlerStart = performance.now();
+		const now = handlerStart;
 		const dtSec = this.tickIntervalMs / 1000;
 		for (const idIndex of snap.removed) {
 			const remote = this.remotes.get(idIndex);
@@ -219,13 +224,23 @@ export class OnlineGame {
 				// un-acked input every snapshot. replay from the ack up to the
 				// last tick we've locally simulated (currentServerTick - 1) to
 				// rebuild the prediction on top of authoritative truth.
-				const currentServerTick = this.serverClock.currentServerTick();
+				const toTick = this.serverClock.currentServerTick() - 1;
+				// the ack can sit arbitrarily far behind toTick: a freshly resumed
+				// session acks from its join tick, and a tab whose flushes stalled
+				// (backgrounded, event loop saturated) freezes it while the server
+				// clock marches on. every tick older than the input buffer's
+				// retention has been pruned and can only replay NEUTRAL, so clamp
+				// the window to that depth — without it one snapshot can demand
+				// millions of catch-up steps against a long-lived server, which
+				// outruns the 66ms snapshot interval and melts the tab for good.
+				const fromTick = Math.max(snap.ackTickForYou, toTick - INPUT_MAX_AGE_TICKS);
+				perfSample("replay ticks", toTick - fromTick);
 				replayLocalInputs(
 					this.world,
 					this.selfChar,
 					pose,
-					snap.ackTickForYou,
-					currentServerTick - 1,
+					fromTick,
+					toTick,
 					dtSec,
 					net.getRecordedInputs()
 				);
@@ -236,6 +251,7 @@ export class OnlineGame {
 			if (!remote.visible) this.showRemote(remote);
 			recordRemotePose(remote, pose, now);
 		}
+		perfSample("snapshot handler ms", performance.now() - handlerStart);
 	}
 
 	pushChatBubble(senderId: ConnId, text: string): void {
@@ -262,10 +278,13 @@ export class OnlineGame {
 	applySelfProfile(profile: Profile): void {
 		this.selfChar.sprite = resolveAvatarSprite(profile.avatarId);
 		this.selfChar.paletteSwap = resolvePaletteSwap(profile.paletteId);
-		this.invalidateSelf();
+		this.renderer.ensureLoaded([this.selfChar]).catch(() => {});
 	}
 
 	step(dtMs: number, net: GameNet | null): number {
+		perfGauge("remotes", this.remotes.size);
+		perfGauge("world chars", this.world.characters.size);
+		perfGauge("chat bubbles", this.chatBubbles.size);
 		this.syncControl(net?.isController() ?? true);
 		if (this.pendingSelfSnap) {
 			const snap = this.pendingSelfSnap;
@@ -386,7 +405,7 @@ export class OnlineGame {
 			// the server derives a player's color the same way, so the self tag
 			// matches what everyone else sees without waiting for a broadcast.
 			const profile = this.deps.profile();
-			draw(this.selfChar, profile.name, paletteAccent(profile.paletteId));
+			draw(this.selfChar, profile.name, profileAccent(profile));
 		}
 	}
 
@@ -534,17 +553,5 @@ export class OnlineGame {
 		this.remotes.delete(r.idIndex);
 		this.remotesByConnId.delete(connId);
 		this.chatBubbles.delete(connId);
-	}
-
-	private invalidateRemote(connId: ConnId): void {
-		const r = this.remotesByConnId.get(connId);
-		if (!r) return;
-		this.renderer.invalidate(r.character.id);
-		this.renderer.ensureLoaded([r.character]).catch(() => {});
-	}
-
-	private invalidateSelf(): void {
-		this.renderer.invalidate(this.selfChar.id);
-		this.renderer.ensureLoaded([this.selfChar]).catch(() => {});
 	}
 }

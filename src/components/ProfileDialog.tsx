@@ -25,10 +25,17 @@ type ProfileDialogProps = {
 	trigger?: ReactNode;
 };
 
+// a rejected name paired with the exact draft text that was rejected, so the
+// error clears itself the moment the field is edited.
+type NameRejection = {name: string; reason: string};
+
 // edits are a draft: the picker mutates local state only, and nothing reaches
 // the parent until the dialog closes. closing it any way (X / overlay / Esc /
-// Enter) commits the draft; a validation rejection keeps the dialog open so the
-// error can surface. the draft re-syncs to props each time the dialog opens.
+// Enter) commits the draft. avatar and palette always commit — they can't be
+// rejected — while the name is validated first, and a rejection costs exactly
+// one dismissal: enough to surface the error, after which any further dismissal
+// leaves anyway. the rejected text stays in the draft, so reopening restores it
+// instead of silently reverting to the committed name.
 export function ProfileDialog({
 	open,
 	onOpenChange,
@@ -44,70 +51,93 @@ export function ProfileDialog({
 	const [draftAvatarId, setDraftAvatarId] = useState(avatarId);
 	const [draftPaletteId, setDraftPaletteId] = useState(paletteId);
 	const [draftName, setDraftName] = useState(name ?? "");
-	// name validation is deferred to Save (never while typing). this holds the
-	// last save-time rejection; editing the name clears it.
-	const [nameError, setNameError] = useState<string | null>(null);
+	// name validation is deferred to save time (never while typing). this holds
+	// the last rejection and outlives the dialog, so a name that bounced can be
+	// restored — still flagged — the next time it opens.
+	const [rejection, setRejection] = useState<NameRejection | null>(null);
 	const [saving, setSaving] = useState(false);
+	// a check that outlives its dismissal still decides the name, but must not
+	// close a dialog the player reopened while it was running.
+	const leftDuringCheck = useRef(false);
+	const nameInputRef = useRef<HTMLInputElement>(null);
 
-	const dirty =
-		draftAvatarId !== avatarId ||
-		draftPaletteId !== paletteId ||
-		(showName && draftName !== name);
+	// keying the rejection to the text that produced it means editing the field
+	// hides the error with no extra bookkeeping.
+	const nameError = rejection !== null && rejection.name === draftName ? rejection.reason : null;
 
-	// closing the dialog commits the draft. a clean draft closes immediately;
-	// otherwise onSave decides whether to close (success) or stay open (rejected).
+	// the look can't be rejected, so it commits on every way out; a no-op once
+	// the draft matches what's already committed.
+	const commitLook = () => {
+		if (draftAvatarId !== avatarId || draftPaletteId !== paletteId)
+			onChange(draftAvatarId, draftPaletteId);
+	};
+
+	// surfaces a rejection where the fix is — focusing also scrolls the field
+	// back into view if the player had scrolled down to the avatar grid.
+	const rejectName = (reason: string) => {
+		setRejection({name: draftName, reason});
+		nameInputRef.current?.focus();
+	};
+
+	// dismissing is never a dead end: one attempt is spent surfacing a name
+	// rejection, and once that error is on screen — or a check is still running —
+	// leaving always works.
 	const handleOpenChange = (next: boolean) => {
-		if (!next) {
-			if (dirty) void onSave();
-			else onOpenChange(false);
+		if (next) {
+			onOpenChange(true);
 			return;
 		}
-		onOpenChange(next);
+		if (nameError !== null || saving) {
+			leftDuringCheck.current = saving;
+			commitLook();
+			onOpenChange(false);
+			return;
+		}
+		void onSave();
 	};
 
 	// snapshot props into the draft only on the open transition, so prop changes
-	// while the dialog is open don't clobber in-progress edits. seed the error
-	// from any standing server rejection so it shows when the dialog is reopened.
+	// while the dialog is open don't clobber in-progress edits. a standing
+	// rejection is kept instead of re-seeded, so the player gets their own text
+	// back; only an unrejected draft follows the committed profile.
 	const wasOpen = useRef(false);
 	useEffect(() => {
 		if (open && !wasOpen.current) {
 			setDraftAvatarId(avatarId);
 			setDraftPaletteId(paletteId);
-			setDraftName(name ?? "");
-			setNameError(showName ? serverNameError ?? null : null);
 			setSaving(false);
+			if (rejection === null) {
+				setDraftName(name ?? "");
+				if (showName && serverNameError !== undefined)
+					setRejection({name: name ?? "", reason: serverNameError});
+			}
 		}
 		wasOpen.current = open;
-	}, [open, avatarId, paletteId, name, showName, serverNameError]);
-
-	const onNameInput = (next: string) => {
-		setDraftName(next);
-		setNameError(null);
-	};
+	}, [open, avatarId, paletteId, name, showName, serverNameError, rejection]);
 
 	const onSave = async () => {
 		if (saving) return;
-		// the validated name is trimmed and whitespace-normalized; propagate that
-		// value, not the raw draft, so local state matches the server's copy.
-		let normalizedName: string | undefined;
-		if (showName) {
+		leftDuringCheck.current = false;
+		commitLook();
+		if (showName && draftName !== name) {
 			const local = validateName(draftName);
 			if (!local.ok) {
-				setNameError(local.reason);
+				rejectName(local.reason);
 				return;
 			}
 			setSaving(true);
 			const remote = await checkNameRemote(local.name);
 			setSaving(false);
 			if (!remote.ok) {
-				setNameError(remote.reason);
+				rejectName(remote.reason);
 				return;
 			}
-			normalizedName = local.name;
+			setRejection(null);
+			// the validated name is trimmed and whitespace-normalized; propagate
+			// that value, not the raw draft, so local state matches the server's.
+			onNameChange?.(local.name);
 		}
-		onChange(draftAvatarId, draftPaletteId);
-		if (normalizedName !== undefined) onNameChange?.(normalizedName);
-		onOpenChange(false);
+		if (!leftDuringCheck.current) onOpenChange(false);
 	};
 
 	return (
@@ -144,8 +174,9 @@ export function ProfileDialog({
 								setDraftPaletteId(p);
 							}}
 							name={showName ? draftName : undefined}
-							onNameChange={showName ? onNameInput : undefined}
+							onNameChange={showName ? setDraftName : undefined}
 							nameError={nameError}
+							nameInputRef={nameInputRef}
 							active={open}
 						/>
 					</div>

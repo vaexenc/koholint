@@ -77,19 +77,32 @@ export type DebugOverlay = {
 };
 
 export function createDebugOverlay(width: number, height: number): DebugOverlay {
-	const canvas = document.createElement("canvas");
-	canvas.width = width;
-	canvas.height = height;
-	const cacheCtx = canvas.getContext("2d");
-	if (!cacheCtx) throw new Error("failed to create debug overlay 2d context");
-
+	// the cache bitmap is map-sized (tens of MB), so it is only allocated once
+	// a static layer is actually enabled — the overlay is an admin diagnostic
+	// and everyone else shouldn't pay for it.
+	let cache: {canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D} | null = null;
 	let cachedSignature: string | null = null;
 	let hasStaticLayers = false;
 
+	const ensureCache = () => {
+		if (cache) return cache;
+		const canvas = document.createElement("canvas");
+		canvas.width = width;
+		canvas.height = height;
+		const ctx = canvas.getContext("2d");
+		if (!ctx) return null;
+		cache = {canvas, ctx};
+		return cache;
+	};
+
 	const rebuild = (world: World, options: DebugOverlayOptions): void => {
-		cacheCtx.clearRect(0, 0, width, height);
-		cacheCtx.lineWidth = LINE_WIDTH;
-		hasStaticLayers = drawStaticLayers(cacheCtx, world, options);
+		hasStaticLayers = false;
+		if (!cache && !STATIC_KEYS.some((key) => options[key])) return;
+		const c = ensureCache();
+		if (!c) return;
+		c.ctx.clearRect(0, 0, width, height);
+		c.ctx.lineWidth = LINE_WIDTH;
+		hasStaticLayers = drawStaticLayers(c.ctx, world, options);
 	};
 
 	return {
@@ -101,7 +114,7 @@ export function createDebugOverlay(width: number, height: number): DebugOverlay 
 			}
 			ctx.save();
 			ctx.setTransform(1, 0, 0, 1, 0, 0);
-			if (hasStaticLayers) ctx.drawImage(canvas, 0, 0);
+			if (hasStaticLayers && cache) ctx.drawImage(cache.canvas, 0, 0);
 			if (options.hitboxes) {
 				ctx.lineWidth = LINE_WIDTH;
 				drawHitboxes(ctx, world, STYLE.hitboxes);

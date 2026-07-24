@@ -2,8 +2,13 @@ import {stepCharacter, type BasicCharacter} from "@/game/character";
 import {NEUTRAL_INPUT, type CharacterInput, type Direction} from "@/game/types";
 import type {World} from "@/game/world";
 import {InputBuffer} from "@/lib/inputBuffer";
+import {perfGauge} from "@/lib/perfHud";
 import {getStored, setStored} from "@/lib/safeStorage";
 import {
+	CLOSE_NORMAL,
+	CLOSE_PROTOCOL,
+	CLOSE_SERVER_FULL,
+	CLOSE_SESSION_TAKEN,
 	decodeAnimByteMs,
 	decodeSnapshot,
 	type ChatMessage,
@@ -21,22 +26,24 @@ import {
 
 export type ConnectionStatus = "idle" | "connecting" | "resuming" | "connected" | "closed";
 
+// why the last connection attempt failed, for UI copy; null once welcomed.
+// serverFull/unreachable keep retrying; sessionTaken (auto-reconnecting would
+// steal the session right back and the two clients would kick each other
+// forever) and rejected are terminal. `message` carries server-authored copy
+// from a pre-close connectionRejected frame, when one arrived.
+export type ConnectionError = {
+	readonly kind: "serverFull" | "sessionTaken" | "rejected" | "unreachable";
+	readonly message?: string;
+};
+
 export const RESUME_TOKEN_KEY = "koholint:resumeToken";
 
-// 1->2->4->8s cap per HANDOFF reconnect spec. last entry repeats forever.
+// 1->2->4->8s reconnect backoff. last entry repeats forever.
 const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000, 8000];
-// ws close code the server uses for protocol/validation failures, including a
-// rejected hello name. before welcome we retry it a few times — the page swaps
-// in a fresh random name on each profileRejected — then it's terminal; after
-// welcome it's always terminal (resending the same hello would reject again).
-const CLOSE_PROTOCOL = 1008;
-// bound on auto-retries after a rejected hello (CLOSE_PROTOCOL before welcome).
-// guards against a pathological reject loop when fresh random names keep failing.
+// bound on auto-retries after a rejected hello (CLOSE_PROTOCOL before welcome —
+// the page swaps in a fresh random name on each profileRejected). guards
+// against a pathological reject loop when fresh random names keep failing.
 const MAX_HELLO_REJECTS = 3;
-// ws close code the server sends when another connection presented our resume
-// token (e.g. a second browser). terminal: auto-reconnecting would steal the
-// session right back and the two clients would kick each other forever.
-const CLOSE_SESSION_TAKEN = 4002;
 
 export type WsClientOpts = {
 	readonly url: string;
@@ -46,6 +53,7 @@ export type WsClientOpts = {
 
 export type WsClientEvents = {
 	onStatus?(status: ConnectionStatus): void;
+	onConnectionError?(error: ConnectionError | null): void;
 	onWelcome?(msg: ServerWelcome): void;
 	onChat?(msg: ChatMessage): void;
 	onPresence?(msg: ChatMessage): void;
@@ -72,6 +80,8 @@ export class WsClient {
 	private helloRejects = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private intentionalClose = false;
+	// connectionRejected text from the current socket, consumed by onClose.
+	private rejectMessage: string | null = null;
 	private outbox: ClientMessage[] = [];
 	private readonly inputBuffer = new InputBuffer();
 	private lastServerAck = 0;
@@ -124,10 +134,9 @@ export class WsClient {
 	}
 
 	flushInputs(currentTick: number): void {
-		this.sendInputBatch(
-			this.lastServerAck,
-			this.inputBuffer.collectUnacked(this.lastServerAck, currentTick)
-		);
+		const inputs = this.inputBuffer.collectUnacked(this.lastServerAck, currentTick);
+		perfGauge("unacked inputs", inputs.length);
+		this.sendInputBatch(this.lastServerAck, inputs);
 	}
 
 	// also the forwarding path for input batches another tab recorded: both
@@ -179,6 +188,8 @@ export class WsClient {
 
 	private openSocket(): void {
 		this.setStatus(this.hasEverConnected ? "resuming" : "connecting");
+		// a fresh attempt must not inherit the previous socket's reject text.
+		this.rejectMessage = null;
 		const socket = new WebSocket(this.opts.url);
 		socket.binaryType = "arraybuffer";
 		this.socket = socket;
@@ -235,6 +246,11 @@ export class WsClient {
 				return this.events.onProfileChanged?.(msg);
 			case "profileRejected":
 				return this.events.onProfileRejected?.(msg);
+			case "connectionRejected":
+				// remembered, not emitted: the close that follows carries the
+				// kind, and emitting once there keeps error state single-sourced.
+				this.rejectMessage = msg.message;
+				return;
 		}
 	}
 
@@ -248,27 +264,46 @@ export class WsClient {
 		// up with the server; drop them and let the page record fresh ones.
 		this.inputBuffer.clear();
 		this.setStatus("connected");
+		this.events.onConnectionError?.(null);
 		this.events.onWelcome?.(msg);
 		for (const queued of this.outbox.splice(0)) this.sendNow(queued);
 	}
 
 	private onClose(ev: CloseEvent): void {
 		this.socket = null;
-		if (this.intentionalClose || ev.code === 1000 || ev.code === CLOSE_SESSION_TAKEN) {
+		if (this.intentionalClose || ev.code === CLOSE_NORMAL) {
+			this.setStatus("closed");
+			return;
+		}
+		if (ev.code === CLOSE_SESSION_TAKEN) {
+			this.emitError("sessionTaken");
 			this.setStatus("closed");
 			return;
 		}
 		// a protocol close before welcome is a rejected hello. the page swaps in
 		// a fresh random profile on profileRejected, so retry through the normal
-		// reconnect path — bounded, and terminal once welcomed or exhausted.
+		// reconnect path — bounded and silent, and terminal once welcomed or
+		// exhausted (only then is the rejection worth surfacing).
 		if (ev.code === CLOSE_PROTOCOL) {
 			if (this.hasEverConnected || this.helloRejects >= MAX_HELLO_REJECTS) {
+				this.emitError("rejected");
 				this.setStatus("closed");
 				return;
 			}
 			this.helloRejects++;
+			this.scheduleReconnect();
+			return;
 		}
+		// re-emitted on every failed attempt on purpose: the tab-sync relay
+		// broadcasts each emission, so follower tabs opened mid-outage still
+		// learn the reason within one backoff cycle.
+		this.emitError(ev.code === CLOSE_SERVER_FULL ? "serverFull" : "unreachable");
 		this.scheduleReconnect();
+	}
+
+	private emitError(kind: ConnectionError["kind"]): void {
+		const message = this.rejectMessage;
+		this.events.onConnectionError?.(message ? {kind, message} : {kind});
 	}
 
 	private scheduleReconnect(): void {

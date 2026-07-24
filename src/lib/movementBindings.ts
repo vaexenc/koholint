@@ -7,14 +7,24 @@ export const CLICK_TO_MOVE_KEY = "koholint:clickToMove";
 const MOVEMENT_KEYS_PER_ACTION = 2;
 
 export type MovementAction = keyof KeyBindings;
-const MOVEMENT_ACTIONS: readonly MovementAction[] = ["up", "down", "left", "right"];
+const MOVEMENT_ACTIONS: readonly MovementAction[] = [
+	"up",
+	"down",
+	"left",
+	"right",
+	"zoomIn",
+	"zoomOut",
+];
 
 // one editor cell: `slot` is the column (0 or 1) within the action's row.
 export type MovementSlot = {action: MovementAction; slot: number};
 
 // the stored payload is untyped json; anything malformed falls back to the
-// defaults wholesale so the four actions always stay consistent with each
-// other. keys are lowercased, deduped across actions, and capped per action.
+// defaults wholesale so the actions always stay consistent with each other.
+// keys are lowercased, deduped across actions, and capped per action. the zoom
+// actions are newer than stored payloads may be: when absent they take their
+// defaults (minus keys the movement rows already claimed) instead of voiding
+// the user's movement setup.
 export function sanitizeMovementBindings(value: unknown): KeyBindings {
 	if (value === null || typeof value !== "object") return DEFAULT_KEY_BINDINGS;
 	const seen = new Set<string>();
@@ -23,7 +33,10 @@ export function sanitizeMovementBindings(value: unknown): KeyBindings {
 	const left = readKeys(Reflect.get(value, "left"), seen);
 	const right = readKeys(Reflect.get(value, "right"), seen);
 	if (!up || !down || !left || !right) return DEFAULT_KEY_BINDINGS;
-	return {up, down, left, right};
+	const zoomIn = readKeys(Reflect.get(value, "zoomIn") ?? DEFAULT_KEY_BINDINGS.zoomIn, seen);
+	const zoomOut = readKeys(Reflect.get(value, "zoomOut") ?? DEFAULT_KEY_BINDINGS.zoomOut, seen);
+	if (!zoomIn || !zoomOut) return DEFAULT_KEY_BINDINGS;
+	return {up, down, left, right, zoomIn, zoomOut};
 }
 
 function readKeys(value: unknown, seen: Set<string>): string[] | null {
@@ -89,6 +102,8 @@ function toSlots(bindings: KeyBindings): SlotMap {
 		down: movementSlots(bindings, "down"),
 		left: movementSlots(bindings, "left"),
 		right: movementSlots(bindings, "right"),
+		zoomIn: movementSlots(bindings, "zoomIn"),
+		zoomOut: movementSlots(bindings, "zoomOut"),
 	};
 }
 
@@ -99,6 +114,8 @@ function fromSlots(slots: SlotMap): KeyBindings {
 		down: compact(slots.down),
 		left: compact(slots.left),
 		right: compact(slots.right),
+		zoomIn: compact(slots.zoomIn),
+		zoomOut: compact(slots.zoomOut),
 	};
 }
 

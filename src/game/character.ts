@@ -20,7 +20,7 @@ import {
 import {lerp} from "./math";
 import {samplePush, type PushGrid} from "./push";
 import {findOverlappingTeleporter, type Teleporter, type TeleporterGrid} from "./teleport";
-import {getTerrainSpeedMultiplier, type TerrainGrid} from "./terrain";
+import {getTerrainSpeedMultiplier, isSwimTile, type TerrainGrid} from "./terrain";
 import {inputHasMovement, type CharacterInput, type Direction, type EntityId} from "./types";
 
 // collision box anchored to a 16x16 sprite's lower-body footprint. matches
@@ -226,11 +226,9 @@ export function stepCharacter(
 		const resolved = char.teleportLatch?.block
 			? clampOutOfBox(before, result.position, char.teleportLatch.block)
 			: result.position;
-		const endX = char.x + (resolved.x - before.x);
-		const endY = char.y + (resolved.y - before.y);
 		char.facing = nextFacing(char.facing, dx, dy);
 		if (result.jumped) {
-			startJump(char, endX, endY);
+			startJump(char, char.x + (resolved.x - before.x), char.y + (resolved.y - before.y));
 			advanceJump(char, dtSec);
 			return;
 		}
@@ -238,8 +236,10 @@ export function stepCharacter(
 			advanceJump(char, dtSec);
 			return;
 		}
-		char.x = endX;
-		char.y = endY;
+		const walked =
+			terrain && cliffs ? blockSwimCliffClimb(before, resolved, terrain, cliffs) : resolved;
+		char.x += walked.x - before.x;
+		char.y += walked.y - before.y;
 		char.walking = true;
 		char.animTimeMs = (char.animTimeMs + dtSec * 1000) % ANIM_PHASE_WRAP_MS;
 		if (teleporters) tryEnterTeleporter(char, before, teleporters);
@@ -273,7 +273,8 @@ function applyPush(char: BasicCharacter, dtSec: number, grid: SolidGrid, push: P
 // direction to the first landable tile (see findCliffLanding). only fires
 // when the motion carries into the fall direction — entering the region
 // against it (e.g. swimming into the cliff base from below) is a climb, not
-// a fall. preserves this frame's perpendicular motion so diagonal approaches
+// a fall (blocked for swimmers by blockSwimCliffClimb). preserves this
+// frame's perpendicular motion so diagonal approaches
 // still read as diagonal hops. no-ops when the fall path is walled in so
 // designers get a hard stop rather than a stuck body.
 function tryCliffJump(
@@ -297,6 +298,26 @@ function tryCliffJump(
 	const endY = char.y + ((horizontal ? after.y : landing.y) - before.y);
 	startJump(char, endX, endY);
 	return true;
+}
+
+// swimmers can't climb out of the water over a cliff's fall edge: while the
+// footprint center is on a swim tile, cliff regions act as walls, clamped
+// per-axis so the body slides along the cliff base instead of stopping dead.
+// runs after tryCliffJump so hopping over an edge in the fall direction still
+// wins. only fresh entries clamp — a body already overlapping a region (e.g.
+// dropped there by a reconciliation snap) moves freely so it can't wedge stuck.
+function blockSwimCliffClimb(
+	before: Aabb,
+	after: Aabb,
+	terrain: TerrainGrid,
+	cliffs: CliffGrid
+): Aabb {
+	if (!isSwimTile(terrain, before) || aabbOverlapsCliff(before, cliffs)) return after;
+	let clamped = after;
+	for (const region of cliffs.regions) {
+		if (aabbsOverlap(clamped, region)) clamped = clampOutOfBox(before, clamped, region);
+	}
+	return clamped;
 }
 
 function startJump(char: BasicCharacter, endX: number, endY: number): void {

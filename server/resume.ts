@@ -1,14 +1,14 @@
 import type {Direction} from "@/game/types";
 import type {Profile} from "@/protocol";
-import {mkdir, readFile, rename, writeFile} from "node:fs/promises";
-import path from "node:path";
-import {log} from "./log";
+import {and, eq, gte, lt} from "drizzle-orm";
+import type {Db} from "./db";
+import {evictPastCap} from "./db/evict";
+import {resumeSlots} from "./db/schema";
 
 export const RESUME_TTL_MS = 24 * 60 * 60 * 1000;
-// hard ceiling on resume slots. bounds memory and the size of resume.json
-// (rewritten wholesale on every persist) so connection churn — malicious or
-// organic — can't grow the table without limit before the 24h TTL sweeps it.
-// the least-recently-touched slot is evicted once the cap is reached.
+// hard ceiling on resume slots. bounds the table so connection churn —
+// malicious or organic — can't grow it without limit before the 24h TTL sweeps
+// it. the least-recently-touched rows are evicted once the cap is exceeded.
 export const MAX_RESUME_SLOTS = 10_000;
 
 export type ResumeSlot = {
@@ -22,97 +22,107 @@ export type ResumeSlot = {
 	lastSeenMs: number;
 };
 
-type Persisted = {
-	readonly version: 1;
-	readonly slots: ReadonlyArray<ResumeSlot>;
-};
+type SlotPatch = Partial<Omit<ResumeSlot, "resumeToken">>;
+type SlotRow = typeof resumeSlots.$inferSelect;
 
-// in-memory index of resume slots, indexed by token. persisted to a single
-// json file on graceful shutdown + every 60s while running. on boot, slots
-// older than RESUME_TTL_MS are discarded. lost on file corruption — chat
-// backlog and live state are not part of this table.
+// resume slots persisted in sqlite (server/data/koholint.db). every method is a
+// direct synchronous query; rows older than RESUME_TTL_MS are invisible to
+// get() and deleted by the periodic sweep(). chat backlog and live state are
+// not part of this table.
 export class ResumeStore {
-	private byToken = new Map<string, ResumeSlot>();
-	private filePath: string;
+	private readonly db: Db;
 
-	constructor(dataDir: string) {
-		this.filePath = path.join(dataDir, "resume.json");
-	}
-
-	async load(): Promise<void> {
-		try {
-			const raw = await readFile(this.filePath, "utf-8");
-			const parsed: Persisted = JSON.parse(raw);
-			if (parsed.version !== 1) return;
-			const now = Date.now();
-			for (const slot of parsed.slots) {
-				if (now - slot.lastSeenMs > RESUME_TTL_MS) continue;
-				this.byToken.set(slot.resumeToken, slot);
-			}
-			log.info(`resume: loaded ${this.byToken.size} slot(s) from ${this.filePath}`);
-		} catch (err) {
-			if (isMissingFile(err)) {
-				log.info(`resume: no prior file at ${this.filePath}, starting fresh`);
-				return;
-			}
-			log.warn(`resume: failed to load ${this.filePath}:`, err);
-		}
-	}
-
-	async persist(): Promise<void> {
-		const now = Date.now();
-		const slots: ResumeSlot[] = [];
-		for (const slot of this.byToken.values()) {
-			if (now - slot.lastSeenMs > RESUME_TTL_MS) continue;
-			slots.push(slot);
-		}
-		const payload: Persisted = {version: 1, slots};
-		const tmp = `${this.filePath}.tmp`;
-		await mkdir(path.dirname(this.filePath), {recursive: true});
-		await writeFile(tmp, JSON.stringify(payload), "utf-8");
-		await rename(tmp, this.filePath);
-	}
-
-	sweep(): number {
-		const now = Date.now();
-		let removed = 0;
-		for (const [token, slot] of this.byToken) {
-			if (now - slot.lastSeenMs > RESUME_TTL_MS) {
-				this.byToken.delete(token);
-				removed++;
-			}
-		}
-		return removed;
+	constructor(db: Db) {
+		this.db = db;
 	}
 
 	get(token: string): ResumeSlot | undefined {
-		return this.byToken.get(token);
+		const row = this.db
+			.select()
+			.from(resumeSlots)
+			.where(
+				and(
+					eq(resumeSlots.resumeToken, token),
+					gte(resumeSlots.lastSeenMs, Date.now() - RESUME_TTL_MS)
+				)
+			)
+			.get();
+		return row === undefined ? undefined : rowToSlot(row);
 	}
 
 	upsert(slot: ResumeSlot): void {
-		// re-key so the entry moves to the most-recent end of the Map's iteration
-		// order; eviction then sheds the least-recently-touched slot in O(1),
-		// avoiding a full scan on every insert under churn.
-		this.byToken.delete(slot.resumeToken);
-		this.byToken.set(slot.resumeToken, slot);
-		if (this.byToken.size > MAX_RESUME_SLOTS) {
-			const oldest = this.byToken.keys().next().value;
-			if (oldest !== undefined) this.byToken.delete(oldest);
-		}
+		const row = slotToRow(slot);
+		this.db
+			.insert(resumeSlots)
+			.values(row)
+			.onConflictDoUpdate({target: resumeSlots.resumeToken, set: row})
+			.run();
+		evictPastCap(
+			this.db,
+			resumeSlots,
+			resumeSlots.resumeToken,
+			resumeSlots.lastSeenMs,
+			MAX_RESUME_SLOTS
+		);
 	}
 
-	touch(token: string, patch: Partial<Omit<ResumeSlot, "resumeToken">>): void {
-		const slot = this.byToken.get(token);
-		if (!slot) return;
-		Object.assign(slot, patch, {lastSeenMs: Date.now()});
-		// keep Map order aligned with recency for the LRU eviction in upsert().
-		this.byToken.delete(token);
-		this.byToken.set(token, slot);
+	touch(token: string, patch: SlotPatch): void {
+		this.db
+			.update(resumeSlots)
+			.set({...flattenPatch(patch), lastSeenMs: Date.now()})
+			.where(eq(resumeSlots.resumeToken, token))
+			.run();
+	}
+
+	sweep(): number {
+		const result = this.db
+			.delete(resumeSlots)
+			.where(lt(resumeSlots.lastSeenMs, Date.now() - RESUME_TTL_MS))
+			.run();
+		return result.changes;
 	}
 }
 
-function isMissingFile(err: unknown): boolean {
-	if (!err || typeof err !== "object" || !("code" in err)) return false;
-	const {code} = err;
-	return code === "ENOENT";
+function rowToSlot(row: SlotRow): ResumeSlot {
+	return {
+		resumeToken: row.resumeToken,
+		connId: row.connId,
+		idIndex: row.idIndex,
+		profile: {name: row.name, avatarId: row.avatarId, paletteId: row.paletteId},
+		x: row.x,
+		y: row.y,
+		facing: row.facing,
+		lastSeenMs: row.lastSeenMs,
+	};
+}
+
+function slotToRow(slot: ResumeSlot): SlotRow {
+	return {
+		resumeToken: slot.resumeToken,
+		connId: slot.connId,
+		idIndex: slot.idIndex,
+		name: slot.profile.name,
+		avatarId: slot.profile.avatarId,
+		paletteId: slot.profile.paletteId,
+		x: slot.x,
+		y: slot.y,
+		facing: slot.facing,
+		lastSeenMs: slot.lastSeenMs,
+	};
+}
+
+function flattenPatch(patch: SlotPatch): Partial<SlotRow> {
+	const flat: Partial<SlotRow> = {};
+	if (patch.connId !== undefined) flat.connId = patch.connId;
+	if (patch.idIndex !== undefined) flat.idIndex = patch.idIndex;
+	if (patch.profile !== undefined) {
+		flat.name = patch.profile.name;
+		flat.avatarId = patch.profile.avatarId;
+		flat.paletteId = patch.profile.paletteId;
+	}
+	if (patch.x !== undefined) flat.x = patch.x;
+	if (patch.y !== undefined) flat.y = patch.y;
+	if (patch.facing !== undefined) flat.facing = patch.facing;
+	if (patch.lastSeenMs !== undefined) flat.lastSeenMs = patch.lastSeenMs;
+	return flat;
 }

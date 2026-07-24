@@ -1,27 +1,31 @@
 import {collectSpawnRegions} from "@/game/spawn";
+import {CLOSE_SHUTDOWN} from "@/protocol";
 import {loadTiledMap} from "@/tiled/loadMap";
 import {serve} from "@hono/node-server";
-import {serveStatic} from "@hono/node-server/serve-static";
 import {Hono} from "hono";
-import {existsSync} from "node:fs";
 import type {Server as HttpServer} from "node:http";
 import path from "node:path";
+import {createApi} from "./api";
+import {closeDb, openDb} from "./db";
+import {envInt} from "./env";
+import {FeedbackStore} from "./feedback";
 import {nodeMapLoaderEnv} from "./loaderEnv";
 import {log} from "./log";
-import {checkName} from "./profanity";
 import {ResumeStore} from "./resume";
 import {Room} from "./rooms";
-import {CLOSE_SHUTDOWN, WsServer} from "./ws";
+import {WsServer} from "./ws";
 
-const PORT = Number(process.env.PORT ?? 3000);
-const HOST = process.env.HOST ?? "127.0.0.1";
+// SERVER_-prefixed: vite reads the same .env root, so bare names wouldn't say
+// which server they configure — and ambient exports (zsh sets HOST) win over
+// --env-file values anyway.
+const PORT = envInt("SERVER_PORT", 3000);
+const HOST = process.env.SERVER_HOST ?? "127.0.0.1";
 const MAP_FILE = "public/maps/overworld-map.json";
-// excluded from the dev watcher (dev:server --ignore) so the 60s resume
-// persist doesn't retrigger a restart.
+// sqlite lives here; excluded from the dev watcher (dev:server --ignore) so
+// db/WAL writes don't retrigger a restart.
 const DATA_DIR = "server/data";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? null;
-const DIST_DIR = "dist";
-const RESUME_PERSIST_INTERVAL_MS = 60_000;
+const RESUME_SWEEP_INTERVAL_MS = 60_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 
 async function main(): Promise<void> {
@@ -36,28 +40,18 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 	log.info(`boot: found ${spawns.length} spawn region(s)`);
-	const resume = new ResumeStore(path.resolve(DATA_DIR));
-	await resume.load();
+	const db = openDb(path.resolve(DATA_DIR));
+	const resume = new ResumeStore(db);
+	// drop rows that expired while the server was down — replaces the ttl
+	// filtering the old json load() did at boot.
+	resume.sweep();
 	const room = new Room({map, spawns});
 	room.start();
 	const app = new Hono();
-	// lets the settings UI surface obscenity/reserved-name rejections inline
-	// before save, without shipping the obscenity package to the client.
-	app.post("/api/validate-name", async (c) => {
-		const body = await c.req.json().catch(() => null);
-		const name = body && typeof body.name === "string" ? body.name : "";
-		const result = checkName(name, false);
-		return c.json(result.ok ? {ok: true} : {ok: false, reason: result.reason});
-	});
-	if (existsSync(path.resolve(DIST_DIR))) {
-		log.info(`boot: serving static assets from ${DIST_DIR}/`);
-		app.use("/*", serveStatic({root: `./${DIST_DIR}`}));
-		// spa fallback so deep links (/, /offline, etc.) resolve to index.html.
-		app.get("*", serveStatic({path: `./${DIST_DIR}/index.html`}));
-	} else {
-		log.info(`boot: no ${DIST_DIR}/ build present; client served by vite dev`);
-		app.get("/", (c) => c.text("koholint server (dev mode — open vite at :5173)"));
-	}
+	app.route("/api", createApi({feedback: new FeedbackStore(db), adminToken: ADMIN_TOKEN}));
+	// the client is never served from here: vite dev serves it in dev, vite
+	// preview serves dist/ in prod — both proxy /api and /ws to this server.
+	app.get("/", (c) => c.text("koholint server (api/ws only)"));
 	const server = serve({fetch: app.fetch, port: PORT, hostname: HOST}, (info) => {
 		log.info(`boot: listening on http://${info.address}:${info.port}`);
 	});
@@ -69,13 +63,12 @@ async function main(): Promise<void> {
 		resume,
 		adminToken: ADMIN_TOKEN,
 	});
-	const persistTimer = setInterval(() => {
-		resume.persist().catch((err) => log.warn("resume: persist failed:", err));
+	const sweepTimer = setInterval(() => {
 		resume.sweep();
-	}, RESUME_PERSIST_INTERVAL_MS);
-	const shutdown = async (signal: string) => {
+	}, RESUME_SWEEP_INTERVAL_MS);
+	const shutdown = (signal: string): void => {
 		log.info(`shutdown: received ${signal}, draining…`);
-		clearInterval(persistTimer);
+		clearInterval(sweepTimer);
 		room.broadcast({
 			type: "system",
 			message: {
@@ -87,13 +80,14 @@ async function main(): Promise<void> {
 		});
 		ws.shutdown("server restarting in a moment…");
 		room.stop();
-		try {
-			await resume.persist();
-		} catch (err) {
-			log.warn("shutdown: resume persist failed:", err);
-		}
 		setTimeout(() => {
-			server.close(() => process.exit(0));
+			// disconnect handlers fire during the grace window and touch() each
+			// slot's position/facing; server.close only calls back once every
+			// connection has closed, so the db closes last — no write can race it.
+			server.close(() => {
+				closeDb(db);
+				process.exit(0);
+			});
 		}, SHUTDOWN_GRACE_MS).unref();
 	};
 	// last-resort barriers so a stray throw or rejection from a socket callback
@@ -103,8 +97,8 @@ async function main(): Promise<void> {
 	// still exits via main().catch below.
 	process.on("uncaughtException", (err) => log.error("runtime: uncaughtException:", err));
 	process.on("unhandledRejection", (reason) => log.error("runtime: unhandledRejection:", reason));
-	process.on("SIGTERM", () => void shutdown("SIGTERM"));
-	process.on("SIGINT", () => void shutdown("SIGINT"));
+	process.on("SIGTERM", () => shutdown("SIGTERM"));
+	process.on("SIGINT", () => shutdown("SIGINT"));
 	log.info(`boot: ws close code on shutdown = ${CLOSE_SHUTDOWN}`);
 }
 
