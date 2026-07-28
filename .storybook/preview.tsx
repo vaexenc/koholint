@@ -1,4 +1,4 @@
-import "../src/styles/index.css";
+import "../src/client/styles/index.css";
 
 import type {Preview} from "@storybook/tanstack-react";
 

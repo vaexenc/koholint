@@ -1,19 +1,17 @@
 // headless load-test bots: connect N clients that walk randomly and chat.
 // usage: npx tsx scripts/bots.ts [count] [--url ws://host:port/ws]
-import {AVATAR_IDS} from "@/components/avatar-picker/avatarIds";
-import type {CharacterInput} from "@/game/types";
-import {isRecord} from "@/lib/isRecord";
-import type {ClientMessage} from "@/protocol";
-import {decodeSnapshot} from "@/protocol";
+import type {CharacterInput} from "@/shared/game/types";
+import {isRecord} from "@/shared/lib/isRecord";
+import type {ClientMessage} from "@/shared/protocol";
+import {INPUT_LEAD_TICKS, TICK_HZ} from "@/shared/protocol";
+import {decodeSnapshot} from "@/shared/protocol/snapshot";
+import {AVATAR_IDS} from "@/shared/sprites/avatarIds";
 import WebSocket, {type RawData} from "ws";
 
-const TICK_HZ = 30;
 const TICK_MS = 1000 / TICK_HZ;
-// stamp inputs a few ticks ahead so they arrive before the server's counter
-// reaches them (it consumes an input only on the tick matching its key), and
-// send a rolling window each frame so serverTick+1 is always populated —
-// otherwise the server stamps NEUTRAL between frames and the character stops.
-const INPUT_LEAD_TICKS = 4;
+// send a rolling window of stamped ticks each frame so serverTick+1 is always
+// populated — otherwise the server stamps NEUTRAL between frames and the
+// character stops.
 const INPUT_WINDOW_TICKS = 6;
 
 const args = process.argv.slice(2);

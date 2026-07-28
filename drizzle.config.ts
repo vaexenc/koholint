@@ -2,7 +2,7 @@ import {defineConfig} from "drizzle-kit";
 
 export default defineConfig({
 	dialect: "sqlite",
-	schema: "./server/db/schema.ts",
-	out: "./server/db/migrations",
-	dbCredentials: {url: "./server/data/koholint.db"},
+	schema: "./src/server/store/db/schema.ts",
+	out: "./src/server/store/db/migrations",
+	dbCredentials: {url: "./_data/koholint.db"},
 });

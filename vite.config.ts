@@ -7,21 +7,27 @@ import {defineConfig, loadEnv} from "vite";
 export default defineConfig(({mode}) => {
 	// load .env (empty prefix: these are plain server vars, not VITE_ ones) so the
 	// proxies forward /ws and /api to the same SERVER_PORT the server binds
-	// (server/index.ts), keeping the two in sync. target stays on loopback even if
+	// (src/server/index.ts), keeping the two in sync. target stays on loopback even if
 	// the server binds a wider SERVER_HOST like 0.0.0.0, which isn't a connectable
 	// address.
 	const env = loadEnv(mode, process.cwd(), "");
 	const serverPort = Number(env.SERVER_PORT) || 3000;
 	// shared by dev (vite) and prod (vite preview): the game server never serves
 	// the client, so both client servers proxy /ws and /api to it.
+	// xfwd on both: the game server keys its connection caps and feedback limit
+	// per client address, and behind a proxy the socket peer is this process for
+	// every player. it reads the forwarded address instead (server/clientIp.ts),
+	// so without this they all share one bucket.
 	const proxy = {
 		"/ws": {
 			target: `ws://127.0.0.1:${serverPort}`,
 			ws: true,
+			xfwd: true,
 		},
 		// name validation (and any future HTTP api) lives on the server.
 		"/api": {
 			target: `http://127.0.0.1:${serverPort}`,
+			xfwd: true,
 		},
 	};
 	// dev (vite) and prod (vite preview) bind the same address so the client

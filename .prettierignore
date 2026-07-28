@@ -1,3 +1,4 @@
+_data
 .claude
 **/*.yaml
 **/*.yml
@@ -7,6 +8,6 @@ AGENTS.md
 CLAUDE.md
 dist
 public
-server/data
-server/db/migrations
+src/server/data
+src/server/store/db/migrations
 storybook-static
