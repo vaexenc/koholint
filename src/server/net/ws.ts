@@ -21,7 +21,7 @@ import {WebSocketServer, type WebSocket} from "ws";
 import {envInt} from "../env";
 import {log} from "../log";
 import {Room, sessionSnapshot, type RoomListener, type Session} from "../rooms";
-import type {ResumeStore} from "../store/resume";
+import type {ResumeStore, SlotPose} from "../store/resume";
 import {matchesAdminToken} from "./adminAuth";
 import {resolveClientIp} from "./clientIp";
 import {parseClientMessage} from "./parseClientMessage";
@@ -46,6 +46,13 @@ const INPUT_MAX_PER_SECOND = 60;
 const VIEW_MAX_PER_SECOND = 10;
 const PING_INTERVAL_MS = 15_000;
 const PONG_TIMEOUT_MS = 30_000;
+// a session's pose otherwise reaches sqlite only when it ends, so an unclean
+// exit — SIGKILL, OOM, power loss — would resume every connected player at
+// wherever they stood when they *connected*, discarding the whole session's
+// movement. this checkpoint bounds that loss to one interval. it also keeps
+// lastSeenMs current, so the resume sweep can't expire a slot out from under a
+// player who has been connected longer than RESUME_TTL_MS.
+const POSE_PERSIST_INTERVAL_MS = 30_000;
 
 // largest control frame we accept before parse. sized to the biggest legitimate
 // client message — a maxed, redundant input batch (~MAX_INPUTS_PER_MESSAGE
@@ -99,6 +106,7 @@ export class WsServer {
 	private readonly connectionsByIp = new Map<string, number>();
 	private totalConnections = 0;
 	private readonly pingTimer: NodeJS.Timeout;
+	private readonly poseTimer: NodeJS.Timeout;
 
 	constructor(opts: WsServerOpts) {
 		this.room = opts.room;
@@ -109,10 +117,14 @@ export class WsServer {
 		this.wss.on("connection", (socket) => this.onConnection(socket));
 		this.room.addListener(this.makeListener());
 		this.pingTimer = setInterval(() => this.heartbeat(), PING_INTERVAL_MS);
+		this.poseTimer = setInterval(() => this.persistPoses(), POSE_PERSIST_INTERVAL_MS);
 	}
 
 	shutdown(reason: string): void {
 		clearInterval(this.pingTimer);
+		// the closes below run dropConnection for every live session, which writes
+		// each final pose — a checkpoint firing in between would only repeat work.
+		clearInterval(this.poseTimer);
 		const goodbye: ServerMessage = {type: "chat", message: systemMessage(reason)};
 		for (const conn of this.byConnId.values()) {
 			safeSendJson(conn.socket, goodbye);
@@ -412,11 +424,7 @@ export class WsServer {
 		this.byConnId.delete(conn.connId);
 		const session = this.room.removeSession(conn.connId);
 		if (session) {
-			this.resume.touch(session.resumeToken, {
-				x: session.character.x,
-				y: session.character.y,
-				facing: session.character.facing,
-			});
+			this.resume.touch(session.resumeToken, slotPose(session));
 			if (action === "leave") this.room.announce(this.makePresence(session, "leave"));
 			this.room.broadcast({type: "leave", connId: conn.connId});
 		}
@@ -431,6 +439,15 @@ export class WsServer {
 			...senderIdentity(session),
 			timestamp: Date.now(),
 		};
+	}
+
+	private persistPoses(): void {
+		this.resume.touchMany(
+			[...this.byConnId.values()].map((conn) => ({
+				token: conn.session.resumeToken,
+				patch: slotPose(conn.session),
+			}))
+		);
 	}
 
 	private heartbeat(): void {
@@ -466,6 +483,16 @@ export class WsServer {
 
 function systemMessage(text: string): ChatMessage {
 	return {id: randomUUID(), kind: "system", text, timestamp: Date.now()};
+}
+
+// the one projection from a live session onto its stored pose, so the periodic
+// checkpoint and the disconnect write can't drift on what gets persisted.
+function slotPose(session: Session): SlotPose {
+	return {
+		x: session.character.x,
+		y: session.character.y,
+		facing: session.character.facing,
+	};
 }
 
 // the one projection from a live session onto the wire's sender shape, so the

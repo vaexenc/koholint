@@ -17,6 +17,10 @@ export type ResumeSlot = typeof resumeSlots.$inferSelect;
 
 type SlotPatch = Partial<Omit<ResumeSlot, "resumeToken">>;
 
+// the position half of a slot, named so the writers of it — the periodic
+// checkpoint and the disconnect handler — share one shape.
+export type SlotPose = Pick<ResumeSlot, "x" | "y" | "facing">;
+
 // resume slots persisted in sqlite (_data/koholint.db). every method is a
 // direct synchronous query; rows older than RESUME_TTL_MS are invisible to
 // get() and deleted by the periodic sweep(). chat backlog and live state are
@@ -62,6 +66,16 @@ export class ResumeStore {
 			.set({...patch, lastSeenMs: Date.now()})
 			.where(eq(resumeSlots.resumeToken, token))
 			.run();
+	}
+
+	// the plural of touch(), in one transaction. the periodic checkpoint updates
+	// every live slot at once, and a bare loop would commit — and fsync — once
+	// per player.
+	touchMany(entries: ReadonlyArray<{readonly token: string; readonly patch: SlotPatch}>): void {
+		if (entries.length === 0) return;
+		this.db.transaction(() => {
+			for (const {token, patch} of entries) this.touch(token, patch);
+		});
 	}
 
 	sweep(): number {
