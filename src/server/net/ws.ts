@@ -61,8 +61,10 @@ const POSE_PERSIST_INTERVAL_MS = 30_000;
 const WS_MAX_PAYLOAD_BYTES = 128 * 1024;
 // concurrency backstops enforced at the upgrade, before a socket is tracked.
 // mainly relevant once HOST is widened past loopback; tune per deployment.
-const MAX_TOTAL_CONNECTIONS = envInt("MAX_TOTAL_CONNECTIONS", 1024);
-const MAX_CONNECTIONS_PER_IP = envInt("MAX_CONNECTIONS_PER_IP", 1024);
+// the total default is sized to the room's O(sessions²) snapshot fan-out —
+// raising it much past 256 needs that pair loop bucketed (spatial grid) first.
+const MAX_TOTAL_CONNECTIONS = envInt("MAX_TOTAL_CONNECTIONS", 256);
+const MAX_CONNECTIONS_PER_IP = envInt("MAX_CONNECTIONS_PER_IP", 24);
 // an over-cap reject completes the handshake just to deliver a readable close
 // frame; terminate after this grace in case the peer never acks the close.
 const REJECT_CLOSE_GRACE_MS = 2000;
