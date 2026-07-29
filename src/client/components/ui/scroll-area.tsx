@@ -16,9 +16,14 @@ function ScrollArea({
 			className={cn("relative", className)}
 			{...props}
 		>
+			{/* radix wraps the children in an undocumented inline-styled
+			    `display:table` box, which shrink-wraps to their min-content width and
+			    so grows past the viewport rather than letting long words wrap — and
+			    the viewport clips horizontally, so that overflow is unreachable.
+			    forcing the wrapper to a block sizes it to the viewport again. */}
 			<ScrollAreaPrimitive.Viewport
 				data-slot="scroll-area-viewport"
-				className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+				className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 [&>div]:block!"
 			>
 				{children}
 			</ScrollAreaPrimitive.Viewport>
