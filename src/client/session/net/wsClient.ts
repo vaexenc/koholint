@@ -18,10 +18,14 @@ export type ConnectionStatus = "idle" | "connecting" | "resuming" | "connected" 
 // serverFull/unreachable keep retrying; sessionTaken (auto-reconnecting would
 // steal the session right back and the two clients would kick each other
 // forever) and rejected are terminal. `message` carries server-authored copy
-// from a pre-close connectionRejected frame, when one arrived.
+// from a pre-close connectionRejected frame, when one arrived. `nextAttemptAt`
+// is when the next automatic attempt fires — absent on the terminal kinds,
+// where nothing is scheduled. an epoch ms rather than a delay, so it stays
+// true however late it renders, including relayed into another tab.
 export type ConnectionError = {
 	readonly kind: "serverFull" | "sessionTaken" | "rejected" | "unreachable";
 	readonly message?: string;
+	readonly nextAttemptAt?: number;
 };
 
 export const RESUME_TOKEN_KEY = "koholint:resumeToken";
@@ -222,18 +226,24 @@ export class WsClient {
 			return;
 		}
 		// re-emitted on every failed attempt on purpose: the tab-sync relay
-		// broadcasts each emission, so follower tabs opened mid-outage still
-		// learn the reason within one backoff cycle.
-		this.emitError(ev.code === CLOSE_SERVER_FULL ? "serverFull" : "unreachable");
-		this.scheduleReconnect();
+		// broadcasts each emission (and replays the last one to a joining tab's
+		// "hi"), so follower tabs keep a current reason through an outage.
+		// scheduled first so the error can carry its retry's timestamp.
+		const nextAttemptAt = this.scheduleReconnect();
+		this.emitError(ev.code === CLOSE_SERVER_FULL ? "serverFull" : "unreachable", nextAttemptAt);
 	}
 
-	private emitError(kind: ConnectionError["kind"]): void {
+	private emitError(kind: ConnectionError["kind"], nextAttemptAt?: number): void {
 		const message = this.rejectMessage;
-		this.events.onConnectionError?.(message ? {kind, message} : {kind});
+		this.events.onConnectionError?.({
+			kind,
+			...(message ? {message} : {}),
+			...(nextAttemptAt === undefined ? {} : {nextAttemptAt}),
+		});
 	}
 
-	private scheduleReconnect(): void {
+	// returns when the scheduled attempt will fire (epoch ms).
+	private scheduleReconnect(): number {
 		const delay = retryDelayMs(this.reconnectAttempt);
 		this.reconnectAttempt++;
 		this.setStatus(this.hasEverConnected ? "resuming" : "connecting");
@@ -241,6 +251,7 @@ export class WsClient {
 			this.reconnectTimer = null;
 			this.openSocket();
 		}, delay);
+		return Date.now() + delay;
 	}
 
 	private setStatus(next: ConnectionStatus): void {

@@ -107,6 +107,11 @@ export class TabSyncedClient {
 	// mirror's hasWelcome(), which asks whether the leader holds a welcome it
 	// could synthesize a state reply from. leaderRelay depends on the difference.
 	private admitted = false;
+	// the last failure the socket's owner reported, kept by leader and follower
+	// alike so a promotion mid-outage doesn't forget it. the leader replays it to
+	// a "hi", so a tab arriving mid-outage learns the reason at once instead of
+	// waiting out a retry backoff — a wait that can outlast the page's join grace.
+	private lastConnError: ConnectionError | null = null;
 	private lastLeaderSignalAt = 0;
 	private followerTimer: ReturnType<typeof setInterval> | null = null;
 	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -165,6 +170,8 @@ export class TabSyncedClient {
 		this.releaseLock = null;
 		this.channel?.close();
 		this.channel = null;
+		// describes a connection this client no longer has.
+		this.lastConnError = null;
 		this.emitStatus("closed");
 	}
 
@@ -234,6 +241,7 @@ export class TabSyncedClient {
 				this.emitStatus(status);
 			},
 			onConnectionError: (error) => {
+				this.lastConnError = error;
 				this.post({t: "connError", error});
 				this.events.onConnectionError?.(error);
 			},
@@ -285,6 +293,7 @@ export class TabSyncedClient {
 						status,
 						snap: this.mirror.synthesizeSnapshot(),
 					});
+				if (this.lastConnError) this.post({t: "connError", error: this.lastConnError});
 				return;
 			}
 			case "send":
@@ -327,6 +336,7 @@ export class TabSyncedClient {
 				return;
 			case "connError":
 				this.noteLeaderSignal();
+				this.lastConnError = msg.error;
 				this.events.onConnectionError?.(msg.error);
 				return;
 			case "heartbeat":

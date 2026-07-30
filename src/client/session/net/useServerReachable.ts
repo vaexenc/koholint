@@ -10,9 +10,18 @@ const SETTLE_MS = 500;
 // polls the ws endpoint while `enabled` and calls `onReachable` once it accepts
 // and holds a connection. the probe never sends a hello, so it claims no session
 // and can't kick a tab that is still playing; it closes as soon as it has its
-// answer and leaves the real join to WsClient.
-export function useServerReachable(enabled: boolean, onReachable: () => void): void {
+// answer and leaves the real join to WsClient. each scheduled probe is reported
+// through `onProbeScheduled` (epoch ms of its firing): while this hook stands in
+// for a dead connection, its probes are the retries the player is waiting on,
+// so the pill's countdown has to run on this schedule, not the one that died
+// with the online page.
+export function useServerReachable(
+	enabled: boolean,
+	onReachable: () => void,
+	onProbeScheduled?: (nextAttemptAt: number) => void
+): void {
 	const reachable = useLatestRef(onReachable);
+	const scheduled = useLatestRef(onProbeScheduled);
 
 	useEffect(() => {
 		if (!enabled) return;
@@ -22,8 +31,10 @@ export function useServerReachable(enabled: boolean, onReachable: () => void): v
 		let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
 		const scheduleProbe = () => {
-			retryTimer = setTimeout(openProbe, retryDelayMs(attempt));
+			const delay = retryDelayMs(attempt);
+			retryTimer = setTimeout(openProbe, delay);
 			attempt++;
+			scheduled.current?.(Date.now() + delay);
 		};
 
 		const openProbe = () => {
@@ -59,5 +70,5 @@ export function useServerReachable(enabled: boolean, onReachable: () => void): v
 			if (settleTimer) clearTimeout(settleTimer);
 			socket?.close();
 		};
-	}, [enabled, reachable]);
+	}, [enabled, reachable, scheduled]);
 }

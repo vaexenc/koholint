@@ -11,6 +11,7 @@ import {useLocalStorage} from "@/client/lib/hooks/useLocalStorage";
 import {spriteFocus, type GameHostContext, type TileClickArgs} from "@/client/session/gameHost";
 import {mapGameSetup} from "@/client/session/mapGame";
 import type {Mode} from "@/client/session/mode";
+import type {ConnectionError} from "@/client/session/net/wsClient";
 import {OfflineGame} from "@/client/session/offlineGame";
 import {
 	handOffPlayerPose,
@@ -33,6 +34,9 @@ type MapPageProps = {
 	// route is still probing the server, so the pill says so instead of reading
 	// as a deliberate "offline".
 	reconnecting?: boolean;
+	// what went wrong with that join, for the pill's hover. only meaningful while
+	// reconnecting.
+	connectionError?: ConnectionError | null;
 	// on the root route teleporting is an admin power (online only), so the
 	// offline page there gets neither the feature nor the toggle; the test map
 	// opts in for everyone.
@@ -50,6 +54,7 @@ function MapPage({
 	mapUrl = DEFAULT_MAP_URL,
 	onModeChange,
 	reconnecting = false,
+	connectionError = null,
 	allowTeleport = false,
 	settingsScope = "map",
 	profileKey = "koholint:profile",
@@ -162,6 +167,7 @@ function MapPage({
 							onModeChange={onModeChange}
 							status={reconnecting ? "resuming" : "idle"}
 							playerCount={0}
+							error={reconnecting ? connectionError : null}
 						/>
 					)
 				}

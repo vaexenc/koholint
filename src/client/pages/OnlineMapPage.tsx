@@ -13,6 +13,7 @@ import {getStored, setStored} from "@/client/lib/safeStorage";
 import {spriteFocus, type GameHostContext, type TileClickArgs} from "@/client/session/gameHost";
 import {mapGameSetup} from "@/client/session/mapGame";
 import type {Mode} from "@/client/session/mode";
+import type {ConnectionError} from "@/client/session/net/wsClient";
 import {OnlineGame} from "@/client/session/onlineGame";
 import {handOffPlayerPose, takePlayerPose} from "@/client/session/playerPose";
 import {randomProfile} from "@/client/session/randomProfile";
@@ -31,12 +32,15 @@ import {useCallback, useEffect, useRef} from "react";
 const LEARNED_MOVEMENT_KEY = "koholint:learnedMovement";
 // zoom-in ceiling for everyone but admins — twice the initial camera scale.
 const MAX_ZOOM = 6;
+// camera insets while the chat panel isn't rendered (pre-join).
+const NO_INSETS = {left: 0, right: 0};
 
 type MapPageProps = {
 	mapUrl?: string;
 	onModeChange: (mode: Mode) => void;
-	// the join couldn't be completed; the root route takes over from here.
-	onJoinFailed: () => void;
+	// the join couldn't be completed; the root route takes over from here, and
+	// carries the reason to the pill on the offline map.
+	onJoinFailed: (error: ConnectionError) => void;
 };
 
 // the online map's chrome. everything the server drives — the connection, the
@@ -168,7 +172,9 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange, onJoinFailed}: M
 		// the overlay is an admin diagnostic; a stored `true` stays inert for
 		// everyone else.
 		debug: settings.debug && session.isAdmin,
-		insets: chat.insets,
+		// the chat only exists once joined, so until then the camera owes it no
+		// space; the inset spring glides it in when the panel appears.
+		insets: session.joined ? chat.insets : NO_INSETS,
 		clickToMove: settings.clickToMove,
 		// admins zoom without limit and see every player; everyone else is
 		// capped so no viewport can outgrow the server's interest area.
@@ -203,16 +209,22 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange, onJoinFailed}: M
 			loading={!session.joined}
 			loadingMessage={session.loadingMessage}
 		>
-			<ChatPanel
-				{...chat.layout}
-				messages={session.messages}
-				onSend={onSendChat}
-				settings={chatSettings}
-				onSettingsChange={setChatSettings}
-				status={session.status}
-				players={session.players}
-				inputRef={chatInputRef}
-			/>
+			{/* no chat (nor its show-chat button) until the join lands: a player
+			    arriving from offline skips the loading gate, and there is no
+			    conversation to show while still connecting. once joined it stays
+			    through a resume — the compose row disables itself instead. */}
+			{session.joined && (
+				<ChatPanel
+					{...chat.layout}
+					messages={session.messages}
+					onSend={onSendChat}
+					settings={chatSettings}
+					onSettingsChange={setChatSettings}
+					status={session.status}
+					players={session.players}
+					inputRef={chatInputRef}
+				/>
+			)}
 			<ProfileDialog
 				open={modals.profileOpen}
 				onOpenChange={modals.setProfileOpen}
@@ -237,6 +249,7 @@ function OnlineMapPage({mapUrl = DEFAULT_MAP_URL, onModeChange, onJoinFailed}: M
 						onModeChange={onModeChange}
 						status={session.status}
 						playerCount={session.players.length}
+						error={session.connectionError}
 						onReconnect={() => net.connect()}
 					/>
 				}

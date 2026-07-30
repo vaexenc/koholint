@@ -1,5 +1,6 @@
 import {readAdminToken} from "@/client/lib/adminToken";
 import {useLatestGetter, useLatestRef} from "@/client/lib/hooks/useLatestRef";
+import {connectionErrorText} from "@/client/session/net/connectionErrorCopy";
 import {TabSyncedClient} from "@/client/session/net/tabSync";
 import {
 	buildWsUrl,
@@ -46,6 +47,13 @@ import {
 // a slow handshake, not a server that is plainly down.
 const JOIN_GRACE_MS = 1500;
 
+// what a join that outran its grace reports: no close event named a reason
+// within it — a hung server, or a leader tab whose retry backoff hasn't
+// re-emitted one yet — so the claim is the grace's own. a failure always
+// carrying a reason is what keeps the fallback pill's hover from ever being
+// empty.
+const JOIN_TIMEOUT_ERROR: ConnectionError = {kind: "unreachable"};
+
 // what the player sees at each step:
 //   preMap → loading (map fetch in flight)
 //   joining → loading (ws hello in flight; players auto-join with a random or
@@ -64,8 +72,10 @@ type JoinPhaseDeps = {
 	readonly connectionError: ConnectionError | null;
 	// opens the connection, on the one transition out of preMap.
 	readonly onJoin: () => void;
-	// the join can't be completed; the route takes over from here.
-	readonly onFailed: () => void;
+	// the join can't be completed; the route takes over from here. the reason
+	// rides along — this session is about to unmount, and the offline map that
+	// replaces it still owes the player an explanation.
+	readonly onFailed: (error: ConnectionError) => void;
 };
 
 // the join as one machine with two transitions and one external event, rather
@@ -97,10 +107,10 @@ function useJoinPhase({
 	useEffect(() => {
 		if (!mapReady || phase === "joined") return;
 		if (connectionError) {
-			onFailed();
+			onFailed(connectionError);
 			return;
 		}
-		const handle = window.setTimeout(onFailed, JOIN_GRACE_MS);
+		const handle = window.setTimeout(() => onFailed(JOIN_TIMEOUT_ERROR), JOIN_GRACE_MS);
 		return () => window.clearTimeout(handle);
 	}, [mapReady, phase, connectionError, onFailed]);
 
@@ -122,24 +132,14 @@ function sameProfile(a: Profile, b: Profile): boolean {
 	return a.name === b.name && a.avatarId === b.avatarId && a.paletteId === b.paletteId;
 }
 
-// fallback copy when the server didn't say why in a connectionRejected frame
-// (e.g. it's unreachable). ascii-only: the zelda pixel font has no
-// ellipsis/em-dash glyphs.
-const CONNECTION_ERROR_COPY: Record<ConnectionError["kind"], string> = {
-	serverFull: "Server is full",
-	sessionTaken: "Session was opened somewhere else",
-	rejected: "Server rejected the connection",
-	unreachable: "Can't reach server",
-};
-
-// copy for the loading screen while the join is stuck. server-authored text
-// wins; a non-terminal status means WsClient is still retrying, so say so.
+// copy for the loading screen while the join is stuck. a non-terminal status
+// means WsClient is still retrying, so say so.
 function connectionMessage(
 	error: ConnectionError | null,
 	status: ConnectionStatus
 ): string | undefined {
 	if (!error) return status === "closed" ? "Disconnected" : undefined;
-	const base = error.message ?? CONNECTION_ERROR_COPY[error.kind];
+	const base = connectionErrorText(error);
 	return status === "closed" ? base : `${base}, retrying...`;
 }
 
@@ -151,7 +151,7 @@ export type OnlineSessionDeps = {
 	readonly setProfile: Dispatch<SetStateAction<Profile>>;
 	// decides which variant of a chat line goes into an in-world bubble.
 	readonly obscenityMode: ChatSettings["obscenityMode"];
-	readonly onJoinFailed: () => void;
+	readonly onJoinFailed: (error: ConnectionError) => void;
 };
 
 export type OnlineSession = {
@@ -159,6 +159,9 @@ export type OnlineSession = {
 	// the reconnect button.
 	readonly net: TabSyncedClient;
 	readonly status: ConnectionStatus;
+	// why the last attempt failed, for the connection pill's hover; null while
+	// the connection is healthy.
+	readonly connectionError: ConnectionError | null;
 	readonly joined: boolean;
 	readonly messages: readonly ChatMessage[];
 	readonly players: readonly PlayerListEntry[];
@@ -371,6 +374,7 @@ export function useOnlineSession({
 	return {
 		net,
 		status,
+		connectionError,
 		joined: phase === "joined",
 		messages,
 		players,
