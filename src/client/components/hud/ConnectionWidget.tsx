@@ -93,7 +93,7 @@ function ConnectionWidget({
 							{view.showCount && (
 								<span className="flex items-center gap-1 text-neutral-400">
 									<Users className="size-3" />
-									<span className="inline-block min-w-[2ch] tabular-nums text-neutral-100">
+									<span className="inline-block min-w-[2ch] font-mono tabular-nums text-neutral-100">
 										{playerCount}
 									</span>
 								</span>
@@ -175,7 +175,7 @@ function ModeRow({selected, onClick, icon, label}: ModeRowProps) {
 			aria-checked={selected}
 			onClick={onClick}
 			className={cn(
-				"h-auto w-full justify-start gap-2 px-2 py-1.5 font-mono text-xs font-normal hover:bg-white/5 hover:text-neutral-100",
+				"h-auto w-full justify-start gap-2 px-2 py-1.5 text-xs font-normal hover:bg-white/5 hover:text-neutral-100",
 				selected ? "bg-white/10 text-neutral-100" : "text-neutral-400"
 			)}
 		>

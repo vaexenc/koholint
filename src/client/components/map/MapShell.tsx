@@ -22,7 +22,7 @@ export function MapShell({canvasProps, state, loading, loadingMessage, children}
 		if (!loading && !failed) markGameEntered();
 	}, [loading, failed]);
 	return (
-		<div className="fixed inset-0 overflow-hidden bg-neutral-950 font-mono">
+		<div className="fixed inset-0 overflow-hidden bg-neutral-950">
 			<canvas {...canvasProps} />
 			{state.status === "error" ? (
 				<div className="absolute inset-0 grid place-items-center p-4">

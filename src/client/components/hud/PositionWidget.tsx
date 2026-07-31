@@ -33,7 +33,7 @@ export function PositionWidget({playerTile}: {playerTile: {x: number; y: number}
 						className={cn(HUD_PILL_INTERACTIVE, padClass, "relative")}
 					>
 						<MapPin className="size-3 text-neutral-400" />
-						<span className="tabular-nums">{coords}</span>
+						<span className="font-mono tabular-nums">{coords}</span>
 						{copyNonce > 0 && (
 							<span
 								key={copyNonce}
@@ -48,7 +48,7 @@ export function PositionWidget({playerTile}: {playerTile: {x: number; y: number}
 				) : (
 					<span className={cn(HUD_PILL, padClass)}>
 						<MapPin className="size-3 text-neutral-400" />
-						<span className="tabular-nums">—</span>
+						<span className="font-mono tabular-nums">—</span>
 					</span>
 				)}
 			</TooltipTrigger>
