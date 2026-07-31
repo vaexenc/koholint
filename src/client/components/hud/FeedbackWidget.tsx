@@ -111,7 +111,7 @@ export function FeedbackWidget({
 							className="max-h-56 min-h-24"
 						/>
 						{error !== null && <p className="text-xs text-destructive">{error}</p>}
-						<DialogFooter>
+						<DialogFooter className="mt-2">
 							<Button type="submit" disabled={sending || message.trim().length === 0}>
 								{sending ? <Loader2 className="animate-spin" /> : <Send />}
 								Send
