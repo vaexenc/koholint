@@ -1,0 +1,17 @@
+_data
+.claude
+.dockerignore
+.env
+.git
+.gitignore
+.idea
+.vscode
+*.log
+compose*.yaml
+dist
+Dockerfile
+logs
+node_modules
+README.md
+public/maps/lamap.png
+storybook-static

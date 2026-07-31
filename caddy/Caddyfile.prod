@@ -1,0 +1,50 @@
+# prod edge: serves the built client (baked into /srv by the Dockerfile) and
+# proxies the api and websocket to the game server, so the whole app is one
+# origin — the client derives its websocket url from window.location.
+#
+# with DOMAIN set to a real hostname caddy provisions a let's encrypt cert.
+# left unset it falls back to localhost with the internal CA, which makes the
+# prod stack testable locally as-is.
+
+# deletions are applied when the response is written, so this reaches proxied
+# responses and errors too. Via is caddy's, added on anything it proxies.
+(anonymize) {
+	header {
+		-Server
+		-Via
+	}
+}
+
+# caddy redirects to https on its own, but that redirect is served by a vhost of
+# its own and would answer with the headers above intact. acme's http challenge
+# is handled ahead of these routes, so issuance still works.
+http://{$DOMAIN:localhost} {
+	import anonymize
+	# 308 over 301: same as caddy's own redirect, and it keeps the method.
+	redir https://{host}{uri} 308
+}
+
+{$DOMAIN:localhost} {
+	import anonymize
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy server:3000
+	}
+
+	handle /ws* {
+		reverse_proxy server:3000
+	}
+
+	handle {
+		root * /srv
+		# vite fingerprints these filenames, so a stale copy can never be the
+		# wrong one. everything else (index.html, maps, sprites) keeps the
+		# default etag revalidation.
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		# the client routes on the path, so unknown paths are app routes, not 404s.
+		try_files {path} /index.html
+		file_server
+	}
+}

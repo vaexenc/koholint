@@ -1,0 +1,100 @@
+# dev stack — run with `docker compose watch` for hot reload.
+#
+# the source lives in the image, not in a bind mount: watch copies edits into
+# the container, so vite and nodemon get real inotify events instead of the
+# polling a windows bind mount would need.
+name: koholint-dev
+
+services:
+  # the only published entry point. reaching vite or the game server directly
+  # would put the page on a different origin than /ws and /api.
+  caddy:
+    image: caddy:2.11.4-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./_data/caddy/dev/data:/data
+      - ./_data/caddy/dev/config:/config
+    networks:
+      default:
+        ipv4_address: 10.87.10.10
+    depends_on:
+      - client
+      - server
+
+  client:
+    build:
+      context: .
+      target: dev
+    image: koholint-dev
+    command: npm run dev:client
+    init: true
+    develop:
+      watch:
+        - action: sync
+          path: ./src/client
+          target: /app/src/client
+        - action: sync
+          path: ./src/shared
+          target: /app/src/shared
+        - action: sync
+          path: ./public
+          target: /app/public
+        - action: sync
+          path: ./index.html
+          target: /app/index.html
+        - action: sync+restart
+          path: ./vite.config.ts
+          target: /app/vite.config.ts
+        - action: rebuild
+          path: ./package.json
+        - action: rebuild
+          path: ./package-lock.json
+
+  server:
+    build:
+      context: .
+      target: dev
+    image: koholint-dev
+    command: npm run dev:server
+    init: true
+    environment:
+      # the container's loopback isn't reachable from caddy.
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "3000"
+      # per-ip connection caps are keyed on x-forwarded-for, but only from a peer
+      # we trust — hence caddy's fixed address (src/server/net/clientIp.ts).
+      TRUSTED_PROXY_IPS: 10.87.10.10
+      # the container never reads .env itself; compose interpolates it here.
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MAX_TOTAL_CONNECTIONS: ${MAX_TOTAL_CONNECTIONS:-256}
+      MAX_CONNECTIONS_PER_IP: ${MAX_CONNECTIONS_PER_IP:-24}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    volumes:
+      - ./_data/db:/app/_data/db
+    develop:
+      watch:
+        # scoped to what the server actually runs: a client-only edit no longer
+        # reaches this container, so it no longer restarts the game.
+        - action: sync
+          path: ./src/server
+          target: /app/src/server
+        - action: sync
+          path: ./src/shared
+          target: /app/src/shared
+        - action: sync
+          path: ./public/maps
+          target: /app/public/maps
+        - action: rebuild
+          path: ./package.json
+        - action: rebuild
+          path: ./package-lock.json
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.87.10.0/24

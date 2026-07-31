@@ -1,13 +1,12 @@
-// the client is served by a separate process (vite dev / preview) that proxies
-// /api and /ws here, so the socket peer is that proxy, not the player — keying
-// the connection caps or the feedback limiter on it would put every player in
-// one bucket. the real address rides in x-forwarded-for, which is only
-// trustworthy when the peer is a proxy we run.
+// caddy fronts the app and proxies /api and /ws here, so the socket peer is
+// caddy, not the player — keying the connection caps or the feedback limiter on
+// it would put every player in one bucket. the real address rides in
+// x-forwarded-for, which is only trustworthy when the peer is a proxy we run.
 
 const IPV4_MAPPED_PREFIX = "::ffff:";
 
-// loopback covers the default single-host topology (both servers on one
-// machine). set TRUSTED_PROXY_IPS when the frontend server runs elsewhere.
+// a fallback for running this process directly; the compose stacks pin
+// TRUSTED_PROXY_IPS to caddy's address on their network instead.
 const DEFAULT_TRUSTED_PROXIES = ["127.0.0.1", "::1"];
 
 // node reports an ipv4 peer as ipv4-mapped ipv6 on a dual-stack socket, so both

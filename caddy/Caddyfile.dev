@@ -1,0 +1,42 @@
+# dev edge: the single origin the browser talks to. the client derives the
+# websocket url from window.location, so /ws has to live on the same origin as
+# the page — vite's own proxy (vite.config.ts) is what does this outside docker
+# and simply goes unused here.
+
+# deletions are applied when the response is written, so this reaches proxied
+# responses and errors too. Via is caddy's, added on anything it proxies.
+(anonymize) {
+	header {
+		-Server
+		-Via
+	}
+}
+
+# caddy redirects to https on its own, but that redirect is served by a vhost of
+# its own and would answer with the headers above intact.
+http://localhost {
+	import anonymize
+	# 308 over 301: same as caddy's own redirect, and it keeps the method.
+	redir https://{host}{uri} 308
+}
+
+localhost {
+	import anonymize
+	# caddy's internal CA; the root cert persists in _caddy/dev/data, so trusting
+	# it once survives container recreation.
+	tls internal
+
+	handle /api/* {
+		reverse_proxy server:3000
+	}
+
+	handle /ws* {
+		reverse_proxy server:3000
+	}
+
+	# everything else is vite, including its hmr websocket at / (reverse_proxy
+	# forwards the upgrade on its own).
+	handle {
+		reverse_proxy client:5173
+	}
+}

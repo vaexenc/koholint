@@ -14,15 +14,15 @@ import {closeDb, openDb} from "./store/db";
 import {FeedbackStore} from "./store/feedback";
 import {ResumeStore} from "./store/resume";
 
-// SERVER_-prefixed: vite reads the same .env root, so bare names wouldn't say
-// which server they configure — and ambient exports (zsh sets HOST) win over
-// --env-file values anyway.
+// SERVER_-prefixed: bare names wouldn't say which server they configure, and
+// ambient exports (zsh sets HOST) would win over a configured value anyway.
 const PORT = envInt("SERVER_PORT", 3000);
 const HOST = process.env.SERVER_HOST ?? "127.0.0.1";
 const MAP_FILE = "public/maps/overworld-map.json";
-// sqlite lives here; kept outside the dev watcher's roots so db/WAL writes
-// don't retrigger a restart.
-const DATA_DIR = "_data";
+// sqlite lives here, in its own dir under _data so it doesn't mix with the
+// other runtime state kept there. outside the dev watcher's roots, so db/WAL
+// writes don't retrigger a restart.
+const DATA_DIR = "_data/db";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? null;
 const RESUME_SWEEP_INTERVAL_MS = 60_000;
 const SHUTDOWN_GRACE_MS = 5_000;
@@ -48,8 +48,8 @@ async function main(): Promise<void> {
 	room.start();
 	const app = new Hono();
 	app.route("/api", createApi({feedback: new FeedbackStore(db), adminToken: ADMIN_TOKEN}));
-	// the client is never served from here: vite dev serves it in dev, vite
-	// preview serves dist/ in prod — both proxy /api and /ws to this server.
+	// the client is never served from here: caddy serves it (vite in dev, the
+	// built dist/ in prod) and routes /api and /ws to this server.
 	app.get("/", (c) => c.text("koholint server (api/ws only)"));
 	const server = serve({fetch: app.fetch, port: PORT, hostname: HOST}, (info) => {
 		log.info(`boot: listening on http://${info.address}:${info.port}`);

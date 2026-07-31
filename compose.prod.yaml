@@ -1,0 +1,78 @@
+# prod stack — `docker compose -f compose.prod.yaml up -d --build`.
+#
+# tunables come from the host .env (compose interpolation); the values that must
+# not drift with a stale .env are hardcoded below instead.
+name: koholint-prod
+
+services:
+  caddy:
+    build:
+      context: .
+      target: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      # http/3
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      # certs and the acme account live here — losing them means re-issuing on
+      # every recreate, which runs into let's encrypt rate limits.
+      - ./_data/caddy/prod/data:/data
+      - ./_data/caddy/prod/config:/config
+    networks:
+      default:
+        ipv4_address: 10.87.20.10
+    # start order only, not a health gate: waiting for healthy makes `up -d`
+    # block on the first healthcheck, and a server that crash-loops never
+    # reports a verdict at all, so the command hangs instead of failing. caddy
+    # retries the upstream by itself, so the worst case is a 502 for a second.
+    depends_on:
+      - server
+
+  server:
+    build:
+      context: .
+      target: server
+    restart: unless-stopped
+    init: true
+    # the shutdown drain takes 5s before the server even starts closing.
+    stop_grace_period: 15s
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "3000"
+      TRUSTED_PROXY_IPS: 10.87.20.10
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MAX_TOTAL_CONNECTIONS: ${MAX_TOTAL_CONNECTIONS:-256}
+      MAX_CONNECTIONS_PER_IP: ${MAX_CONNECTIONS_PER_IP:-24}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    volumes:
+      # sqlite. the container runs as uid 1000, so on a linux host this has to
+      # exist and be writable by it (`mkdir -p _data/db && chown -R 1000:1000
+      # _data`) before the first up — docker otherwise creates it owned by root
+      # and the db can't be opened.
+      - ./_data/db:/app/_data/db
+    healthcheck:
+      # the slim image has no curl or wget.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      # this engine has no start_interval, so the first probe lands one full
+      # interval in — keep it short enough that `docker compose ps` tells the
+      # truth about a fresh boot.
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.87.20.0/24

@@ -21,7 +21,7 @@ type SlotPatch = Partial<Omit<ResumeSlot, "resumeToken">>;
 // checkpoint and the disconnect handler — share one shape.
 export type SlotPose = Pick<ResumeSlot, "x" | "y" | "facing">;
 
-// resume slots persisted in sqlite (_data/koholint.db). every method is a
+// resume slots persisted in sqlite (_data/db/koholint.db). every method is a
 // direct synchronous query; rows older than RESUME_TTL_MS are invisible to
 // get() and deleted by the periodic sweep(). chat backlog and live state are
 // not part of this table.
