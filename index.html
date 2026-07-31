@@ -8,8 +8,121 @@
 			content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
 		/>
 		<title>koholint</title>
+
+		<style>
+			@font-face {
+				font-family: "OoT GfxPrint";
+				src: url("/fonts/OoTGfxPrint-Regular.woff2") format("woff2");
+				font-weight: normal;
+				font-style: normal;
+				font-display: block;
+			}
+
+			.noscript-screen {
+				position: fixed;
+				inset: 0;
+				overflow: auto;
+				background-color: black;
+			}
+
+			.noscript-content {
+				position: relative;
+				width: fit-content;
+				margin: 3em auto 0;
+				padding-left: 0.55ch;
+				font-family: "OoT GfxPrint", monospace, sans-serif;
+				line-height: 1;
+				letter-spacing: -0.26em;
+				padding-bottom: 2.5em;
+				color: white;
+				font-size: 2.75vmin;
+			}
+
+			.noscript-content *::selection {
+				background-color: white;
+				color: black;
+			}
+
+			.noscript-content a {
+				color: white !important;
+				text-decoration: none !important;
+			}
+
+			.noscript-content .border {
+				position: absolute;
+				top: 1em;
+				left: 0;
+				user-select: none;
+			}
+
+			.noscript-content .border > div {
+				margin-bottom: 0.3em;
+			}
+
+			.noscript-content .text-line {
+				margin: 0;
+			}
+
+			.noscript-content .text-line-2 {
+				margin-top: 0.66em;
+				margin-left: 11ch;
+			}
+
+			.noscript-content .text-line-3 {
+				margin-left: 2.5ch;
+				margin-top: 22em;
+			}
+
+			.noscript-content .text-line-4 {
+				margin-left: 5ch;
+			}
+
+			.noscript-content .text-line-5 {
+				margin-left: 4ch;
+			}
+		</style>
 	</head>
 	<body>
+		<noscript>
+			<div class="noscript-screen">
+				<div class="noscript-content">
+					<p class="text-line text-line-1">CallBack (1) 80008ee8 00000000 00000000</p>
+					<p class="text-line text-line-2">I LOVE YOU 00000000</p>
+					<p class="text-line text-line-3">
+						ROM_F [Creator:<a href="https://github.com/vaexenc" target="_blank"
+							>vaexenc@github</a
+						>]
+					</p>
+					<p class="text-line text-line-4">[Date:%VITE_BUILD_DATE%]</p>
+					<p class="text-line text-line-5">KOHOLINT 00000000 00000000</p>
+
+					<div class="border">
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+						<div>:</div>
+					</div>
+				</div>
+			</div>
+		</noscript>
 		<div id="root"></div>
 		<script type="module" src="/src/client/main.tsx"></script>
 	</body>

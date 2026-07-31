@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 import path from "node:path";
 import {defineConfig, loadEnv} from "vite";
 
+// exposed to index.html as %VITE_BUILD_DATE% (UTC, "YYYY-MM-DD HH:MM:SS UTC") for the
+// noscript crash screen.
+process.env.VITE_BUILD_DATE = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+
 // https://vite.dev/config/
 export default defineConfig(({mode}) => {
 	// load .env (empty prefix: these are plain server vars, not VITE_ ones) so the
